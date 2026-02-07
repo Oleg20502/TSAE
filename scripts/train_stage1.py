@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Stage-1 training script: train the RAE-text autoencoder."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import torch
+from transformers import (
+    AutoTokenizer,
+    Trainer,
+    TrainingArguments,
+)
+
+# Allow running from repo root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.utils.config import merge_configs, ExperimentConfig
+from src.backbones.simcse_repr import SimCSEReprEncoder
+from src.models.detail_encoder import DetailEncoder
+from src.models.decoder import LatentConditionedDecoder
+from src.models.rae_text import RAEText
+from src.data.datasets import load_text_dataset
+from src.data.collators import RAECollator
+
+
+# ---------------------------------------------------------------------------
+# Custom Trainer (to handle two-param-group optimiser)
+# ---------------------------------------------------------------------------
+
+class RAETrainer(Trainer):
+    """Thin Trainer subclass to set up per-parameter-group learning rates."""
+
+    def create_optimizer(self):
+        if self.optimizer is not None:
+            return self.optimizer
+
+        model: RAEText = self.model
+        repr_lr = getattr(self, "_repr_lr", 1e-5)
+        base_lr = self.args.learning_rate
+
+        # Separate repr encoder params (if any are trainable) from the rest
+        repr_params = []
+        other_params = []
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if name.startswith("repr_encoder."):
+                repr_params.append(param)
+            else:
+                other_params.append(param)
+
+        param_groups = [
+            {"params": other_params, "lr": base_lr},
+        ]
+        if repr_params:
+            param_groups.append({"params": repr_params, "lr": repr_lr})
+
+        self.optimizer = torch.optim.AdamW(
+            param_groups,
+            weight_decay=self.args.weight_decay,
+        )
+        return self.optimizer
+
+
+# ---------------------------------------------------------------------------
+# Build model from config
+# ---------------------------------------------------------------------------
+
+def build_model(cfg: ExperimentConfig, vocab_size: int, pad_token_id: int) -> RAEText:
+    mc = cfg.model
+
+    # Backbone
+    repr_encoder = SimCSEReprEncoder(model_name=mc.backbone_name)
+
+    # Detail encoder
+    detail_enc = DetailEncoder(
+        input_dim=repr_encoder.tok_dim,
+        d_det=mc.d_det,
+        n_tokens=mc.n_detail_tokens,
+        n_layers=mc.detail_encoder_layers,
+        n_heads=mc.detail_encoder_heads,
+        dropout=mc.decoder_dropout,
+    )
+
+    # Decoder
+    decoder = LatentConditionedDecoder(
+        vocab_size=vocab_size,
+        d_model=mc.decoder_dim,
+        n_layers=mc.decoder_layers,
+        n_heads=mc.decoder_heads,
+        d_ff=mc.decoder_ff_dim,
+        max_length=mc.max_decoder_length,
+        dropout=mc.decoder_dropout,
+        pad_token_id=pad_token_id,
+    )
+
+    # Full model
+    model = RAEText(
+        repr_encoder=repr_encoder,
+        detail_encoder=detail_enc,
+        decoder=decoder,
+        d_sem=mc.d_sem,
+        lambda_sem=mc.lambda_sem,
+        freeze_repr=mc.freeze_repr,
+    )
+    return model
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Train Stage-1 RAE autoencoder")
+    parser.add_argument(
+        "--configs",
+        nargs="+",
+        required=True,
+        help="One or more YAML config files (later overrides earlier)",
+    )
+    args = parser.parse_args()
+
+    # Load config
+    cfg = merge_configs(*args.configs)
+    print(f"=== Config ===\n{cfg}\n")
+
+    # Tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
+    vocab_size = tokenizer.vocab_size
+    pad_token_id = tokenizer.pad_token_id or 0
+
+    # Model
+    model = build_model(cfg, vocab_size, pad_token_id)
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    n_total = sum(p.numel() for p in model.parameters())
+    print(f"Parameters: {n_trainable:,} trainable / {n_total:,} total")
+
+    # Data
+    datasets = load_text_dataset(cfg.data)
+    collator = RAECollator(
+        tokenizer=tokenizer,
+        max_length=cfg.data.max_length,
+        text_column=cfg.data.text_column,
+    )
+
+    # Training arguments
+    tc = cfg.train
+    training_args = TrainingArguments(
+        output_dir=tc.output_dir,
+        num_train_epochs=tc.epochs,
+        per_device_train_batch_size=tc.batch_size,
+        per_device_eval_batch_size=tc.batch_size,
+        gradient_accumulation_steps=tc.gradient_accumulation_steps,
+        learning_rate=tc.lr,
+        weight_decay=tc.weight_decay,
+        warmup_steps=tc.warmup_steps,
+        logging_steps=tc.logging_steps,
+        eval_strategy="steps",
+        eval_steps=tc.eval_steps,
+        save_strategy="steps",
+        save_steps=tc.save_steps,
+        save_total_limit=tc.save_total_limit,
+        fp16=tc.fp16,
+        bf16=tc.bf16,
+        dataloader_num_workers=tc.dataloader_num_workers,
+        seed=tc.seed,
+        report_to=tc.report_to,
+        remove_unused_columns=False,  # we pass custom columns
+    )
+
+    # Trainer
+    trainer = RAETrainer(
+        model=model,
+        args=training_args,
+        train_dataset=datasets["train"],
+        eval_dataset=datasets["validation"],
+        data_collator=collator,
+    )
+    trainer._repr_lr = tc.repr_lr
+
+    # Train
+    trainer.train()
+
+    # Save final model
+    trainer.save_model(tc.output_dir + "/final")
+    tokenizer.save_pretrained(tc.output_dir + "/final")
+    print(f"Model saved to {tc.output_dir}/final")
+
+
+if __name__ == "__main__":
+    main()
