@@ -110,15 +110,62 @@ class EvalConfig:
 
 
 # ---------------------------------------------------------------------------
-# Top-level config
+# Bottleneck Model
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BottleneckModelConfig:
+    """Configuration for the Bottleneck autoencoder model."""
+
+    # Backbone (used only as semantic loss target)
+    backbone_name: str = "princeton-nlp/sup-simcse-bert-base-uncased"
+    freeze_repr: bool = True
+
+    # Encoder
+    d_latent: int = 256
+    encoder_dim: int = 256
+    encoder_layers: int = 4
+    encoder_heads: int = 4
+    encoder_ff_dim: int = 512
+    encoder_dropout: float = 0.1
+    max_encoder_length: int = 128
+
+    # Decoder
+    decoder_layers: int = 4
+    decoder_heads: int = 4
+    decoder_dim: int = 256
+    decoder_ff_dim: int = 512
+    decoder_dropout: float = 0.1
+    max_decoder_length: int = 128
+
+    # Latent augmentation
+    noise_std: float = 0.0
+    feature_dropout_p: float = 0.0
+
+    # Loss weights
+    lambda_sem: float = 0.2
+
+
+# ---------------------------------------------------------------------------
+# Top-level configs
 # ---------------------------------------------------------------------------
 
 @dataclass
 class ExperimentConfig:
-    """Top-level config aggregating all sub-configs."""
+    """Top-level config aggregating all sub-configs (RAE-text)."""
 
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    train: TrainConfig = field(default_factory=TrainConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
+
+
+@dataclass
+class BottleneckExperimentConfig:
+    """Top-level config for the Bottleneck autoencoder."""
+
+    data: DataConfig = field(default_factory=DataConfig)
+    model: BottleneckModelConfig = field(default_factory=BottleneckModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
 
@@ -142,6 +189,12 @@ def load_config(path: str | Path) -> ExperimentConfig:
     return from_dict(data_class=ExperimentConfig, data=raw, config=_DACITE_CFG)
 
 
+def load_bottleneck_config(path: str | Path) -> BottleneckExperimentConfig:
+    """Load a BottleneckExperimentConfig from a YAML file."""
+    raw = load_yaml(path)
+    return from_dict(data_class=BottleneckExperimentConfig, data=raw, config=_DACITE_CFG)
+
+
 def merge_configs(*paths: str | Path) -> ExperimentConfig:
     """Load and merge multiple YAML files (later files override earlier)."""
     merged: dict = {}
@@ -155,3 +208,18 @@ def merge_configs(*paths: str | Path) -> ExperimentConfig:
             else:
                 merged[section] = values
     return from_dict(data_class=ExperimentConfig, data=merged, config=_DACITE_CFG)
+
+
+def merge_bottleneck_configs(*paths: str | Path) -> BottleneckExperimentConfig:
+    """Load and merge multiple YAML files for the Bottleneck AE (later files override earlier)."""
+    merged: dict = {}
+    for p in paths:
+        raw = load_yaml(p)
+        for section, values in raw.items():
+            if section not in merged:
+                merged[section] = {}
+            if isinstance(values, dict):
+                merged[section].update(values)
+            else:
+                merged[section] = values
+    return from_dict(data_class=BottleneckExperimentConfig, data=merged, config=_DACITE_CFG)

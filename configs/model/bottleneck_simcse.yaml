@@ -1,0 +1,28 @@
+model:
+  # Backbone (frozen, semantic loss target only)
+  backbone_name: "princeton-nlp/sup-simcse-bert-base-uncased"
+  freeze_repr: true
+
+  # Encoder (standalone transformer)
+  d_latent: 256
+  encoder_dim: 256
+  encoder_layers: 4
+  encoder_heads: 4
+  encoder_ff_dim: 512
+  encoder_dropout: 0.1
+  max_encoder_length: 128
+
+  # Decoder
+  decoder_layers: 4
+  decoder_heads: 4
+  decoder_dim: 256
+  decoder_ff_dim: 512
+  decoder_dropout: 0.1
+  max_decoder_length: 128
+
+  # Latent augmentation
+  noise_std: 0.1
+  feature_dropout_p: 0.1
+
+  # Loss
+  lambda_sem: 0.2
