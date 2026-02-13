@@ -2,31 +2,33 @@
 
 ## Installation
 
-### Environment per GPU type
+Use different setups for different GPU types.
 
-Use different dependency sets for different servers.
-
-##### A100 (and Ampere / newer)
-
-Use the default `pyproject.toml` at the repo root:
+### A100 (Ampere / newer)
 
 ```bash
 pip install -e .
 ```
 
-Safe to use `bf16: true` in train configs.
+### 1080 Ti (Pascal)
 
-#### GTX 1080Ti (Pascal)
+DeepSpeed needs `CUDA_HOME` (CUDA toolkit). Use a conda env that provides PyTorch and the CUDA toolkit:
 
-On the Pascal server, use the Pascal-specific project file:
+1. Create and activate the env:
+   ```bash
+   conda env create -f envs/conda-pascal.yaml
+   conda activate tsae-1080
+   ```
+2. Install TSAE in editable mode:
+   ```bash
+   cp pyproject.pascal.toml pyproject.toml
+   pip install -e .
+   ```
+Don't use bf16 presicion.
 
-```bash
-# Replace project file then install (one-time per clone)
-cp pyproject.pascal.toml pyproject.toml
-pip install -e .
-```
+If you get `MissingCUDAException: CUDA_HOME does not exist`, set it before training:
+   ```bash
+   export CUDA_HOME=$CONDA_PREFIX
+   ```
 
-- In train configs set **fp16: true**, **bf16: false** (Pascal has no bf16 tensor cores).
-- Prefer installing a PyTorch CUDA 11.8 wheel for best compatibility.
-- To check DeepSpeed on that machine: `ds_report` or `python -m deepspeed.env_report`.
-
+Optional: to remove the DeepSpeed `async_io` / `libaio` warning on Debian/Ubuntu, install `libaio-dev` (e.g. `sudo apt-get install libaio-dev`). Training runs without it; only async I/O is affected.
