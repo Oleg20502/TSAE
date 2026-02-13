@@ -1,5 +1,8 @@
-# TSAE – default env: A100 / Ampere and newer GPUs (bf16, TF32, recent CUDA).
-# For 1080 Ti (Pascal): on that server use pyproject.pascal.toml (see envs/README.md or copy over pyproject.toml).
+# TSAE – environment for Pascal GPUs (e.g. GTX 1080 Ti).
+# Install: pip install -e ".[pascal]"  (see README or use constraints below)
+#
+# On Pascal: use fp16: true, bf16: false in train configs (no native bf16).
+# Avoid torch.compile(); use stock Trainer. CUDA 11.8 wheels recommended for torch.
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
@@ -13,13 +16,15 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 
+# Pinned for Pascal (1080 Ti): PyTorch 2.0–2.2 + CUDA 11.8 is well-tested; avoid newest to reduce CUDA/arch issues.
+# DeepSpeed: optional upper bound; run ds_report on the server and relax if needed.
 dependencies = [
-    "torch>=2.1",
-    "transformers>=4.36",
+    "torch>=2.0,<2.3",
+    "transformers>=4.35,<4.46",
     "datasets>=2.16",
     "peft",
     "accelerate",
-    "deepspeed",
+    "deepspeed>=0.12,<0.15",
     "sentence-transformers>=2.3",
     "pyyaml>=6.0",
     "dacite>=1.8",
