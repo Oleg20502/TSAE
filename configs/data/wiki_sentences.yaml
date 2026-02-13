@@ -2,7 +2,7 @@ data:
   dataset_name: wikipedia
   dataset_config: "20220301.en"
   text_column: text
-  max_length: 128
+  max_length: 16
   num_train_samples: 100000
   num_val_samples: 2000
   seed: 42

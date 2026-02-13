@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 import torch
 from transformers import PreTrainedTokenizerBase
 
+if TYPE_CHECKING:
+    from src.utils.config import DataConfig
+
 
 @dataclass
 class ARDecoderCollator:
-    """Collator for the autoencoder model with autregressive decoder.
+    """Collator for the autoencoder model with autoregressive decoder.
 
     Tokenizes raw text and produces encoder inputs + decoder inputs (teacher
     forcing) in a single batch dict.
@@ -19,11 +22,28 @@ class ARDecoderCollator:
     The decoder uses the same tokenizer as the encoder.  Decoder inputs are
     the target tokens shifted right (prepended with BOS / [CLS]).
     Labels have padding positions set to -100 so they are ignored by CE loss.
+
+    ``max_length`` and ``text_column`` are typically taken from the data config
+    (e.g. ``cfg.data``). Use ``from_data_config(tokenizer, cfg.data)`` to build
+    from config.
     """
 
     tokenizer: PreTrainedTokenizerBase
     max_length: int = 128
     text_column: str = "text"
+
+    @classmethod
+    def from_data_config(
+        cls,
+        tokenizer: PreTrainedTokenizerBase,
+        data_config: "DataConfig",
+    ) -> ARDecoderCollator:
+        """Build collator from a data config (max_length and text_column from config)."""
+        return cls(
+            tokenizer=tokenizer,
+            max_length=data_config.max_length,
+            text_column=data_config.text_column,
+        )
 
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         texts = [ex[self.text_column] for ex in examples]
