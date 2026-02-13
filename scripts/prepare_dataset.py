@@ -42,8 +42,8 @@ def main() -> None:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    num_proc = args.num_proc if args.num_proc is not None else dc.prepare_num_proc
-    batch_size = args.paragraph_batch_size if args.paragraph_batch_size is not None else (dc.prepare_paragraph_batch_size or 2000)
+    num_proc = dc.prepare_num_proc or 1
+    batch_size = dc.prepare_paragraph_batch_size or 2000
 
     print(f"Dataset: {dc.dataset_name} / {dc.dataset_config}")
     print(f"Output: {out}")
