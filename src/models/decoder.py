@@ -76,7 +76,7 @@ class DecoderBlock(nn.Module):
 # Full decoder
 # ---------------------------------------------------------------------------
 
-class LatentAutoRegressiveDecoder(nn.Module):
+class AutoRegressiveDecoder(nn.Module):
     """Autoregressive Transformer decoder conditioned on latent tokens via cross-attention.
 
     Returns logits over the vocabulary and a pooled hidden state for the

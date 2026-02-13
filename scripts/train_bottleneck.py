@@ -21,7 +21,7 @@ from src.utils.config import merge_bottleneck_configs, BottleneckExperimentConfi
 from src.backbones.simcse_repr import SimCSEReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
-from src.models.decoder import LatentAutoRegressiveDecoder
+from src.models.decoder import AutoRegressiveDecoder
 from src.models.bottleneck_ae import BottleneckAE
 from src.data.datasets import load_text_dataset
 from src.data.collators import ARDecoderCollator
@@ -32,12 +32,28 @@ from src.data.collators import ARDecoderCollator
 # ---------------------------------------------------------------------------
 
 class BottleneckTrainer(Trainer):
-    """Thin Trainer subclass.
+    """Trainer that logs l_recon and l_sem from the model output.
 
-    The repr_encoder is always frozen in this setting, so no separate
-    parameter group is needed -- all trainable params share the same LR.
+    The repr_encoder is always frozen, so no separate parameter group.
     """
-    pass
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        outputs = model(**inputs)
+        loss = outputs["loss"]
+
+        # Log component losses at logging steps (same keys as TensorBoard)
+        if self.state.global_step % self.args.logging_steps == 0:
+            logs = {}
+            if "l_recon" in outputs:
+                logs["train_l_recon"] = outputs["l_recon"].item()
+            if "l_sem" in outputs:
+                logs["train_l_sem"] = outputs["l_sem"].item()
+            if logs:
+                self.log(logs)
+
+        if return_outputs:
+            return (loss, outputs)
+        return loss
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +85,7 @@ def build_model(
     )
 
     # Decoder
-    decoder = LatentAutoRegressiveDecoder(
+    decoder = AutoRegressiveDecoder(
         vocab_size=vocab_size,
         d_model=mc.decoder_dim,
         n_layers=mc.decoder_layers,

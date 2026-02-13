@@ -10,7 +10,7 @@ import torch.nn as nn
 from src.backbones.base_repr import BaseTextReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
-from src.models.decoder import LatentAutoRegressiveDecoder
+from src.models.decoder import AutoRegressiveDecoder
 from src.losses.reconstruction import reconstruction_loss
 from src.losses.semantic import semantic_consistency_loss
 
@@ -37,7 +37,7 @@ class BottleneckAE(nn.Module):
     def __init__(
         self,
         encoder: BottleneckEncoder,
-        decoder: LatentAutoRegressiveDecoder,
+        decoder: AutoRegressiveDecoder,
         repr_encoder: BaseTextReprEncoder,
         latent_aug: LatentAugmentation | None = None,
         lambda_sem: float = 0.2,

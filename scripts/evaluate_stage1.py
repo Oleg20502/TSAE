@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.utils.config import merge_configs, ExperimentConfig
 from src.backbones.simcse_repr import SimCSEReprEncoder
 from src.models.detail_encoder import DetailEncoder
-from src.models.decoder import LatentAutoRegressiveDecoder
+from src.models.decoder import AutoRegressiveDecoder
 from src.models.rae_text import RAEText
 from src.data.datasets import load_text_dataset
 from src.data.collators import ARDecoderCollator

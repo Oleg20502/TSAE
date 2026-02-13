@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.backbones.base_repr import BaseTextReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
-from src.models.decoder import LatentAutoRegressiveDecoder
+from src.models.decoder import AutoRegressiveDecoder
 from src.models.bottleneck_ae import BottleneckAE
 
 
@@ -69,7 +69,7 @@ def encoder():
 
 @pytest.fixture
 def decoder():
-    return LatentAutoRegressiveDecoder(
+    return AutoRegressiveDecoder(
         vocab_size=VOCAB, d_model=D_DEC, n_layers=2, n_heads=N_HEADS,
         d_ff=D_DEC * 2, max_length=T, pad_token_id=0,
     )
@@ -240,7 +240,7 @@ def _build_bottleneck_model():
         n_layers=2, n_heads=N_HEADS, d_ff=D_LATENT * 2,
         max_length=T, pad_token_id=0,
     )
-    decoder = LatentAutoRegressiveDecoder(
+    decoder = AutoRegressiveDecoder(
         vocab_size=VOCAB, d_model=D_DEC, n_layers=2, n_heads=N_HEADS,
         d_ff=D_DEC * 2, max_length=T, pad_token_id=0,
     )
