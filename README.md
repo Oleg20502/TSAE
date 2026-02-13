@@ -7,6 +7,7 @@ Use different setups for different GPU types.
 ### A100 (Ampere / newer)
 
 ```bash
+conda env create -n tsae python=3.10
 pip install -e .
 ```
 
