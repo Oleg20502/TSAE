@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.backbones.base_repr import BaseTextReprEncoder
 from src.models.detail_encoder import DetailEncoder
-from src.models.decoder import LatentConditionedDecoder
+from src.models.decoder import LatentAutoRegressiveDecoder
 from src.models.rae_text import RAEText
 
 
@@ -60,7 +60,7 @@ def _build_model():
     detail_enc = DetailEncoder(
         input_dim=H, d_det=D_DET, n_tokens=M, n_layers=2, n_heads=N_HEADS,
     )
-    decoder = LatentConditionedDecoder(
+    decoder = LatentAutoRegressiveDecoder(
         vocab_size=VOCAB, d_model=D_DEC, n_layers=2, n_heads=N_HEADS,
         d_ff=D_DEC * 2, max_length=T, pad_token_id=0,
     )

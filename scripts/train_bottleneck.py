@@ -21,10 +21,10 @@ from src.utils.config import merge_bottleneck_configs, BottleneckExperimentConfi
 from src.backbones.simcse_repr import SimCSEReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
-from src.models.decoder import LatentConditionedDecoder
+from src.models.decoder import LatentAutoRegressiveDecoder
 from src.models.bottleneck_ae import BottleneckAE
 from src.data.datasets import load_text_dataset
-from src.data.collators import RAECollator
+from src.data.collators import ARDecoderCollator
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +59,7 @@ def build_model(
         vocab_size=vocab_size,
         d_model=mc.encoder_dim,
         d_latent=mc.d_latent,
+        n_latent_tokens=mc.n_latent_tokens,
         n_layers=mc.encoder_layers,
         n_heads=mc.encoder_heads,
         d_ff=mc.encoder_ff_dim,
@@ -68,7 +69,7 @@ def build_model(
     )
 
     # Decoder
-    decoder = LatentConditionedDecoder(
+    decoder = LatentAutoRegressiveDecoder(
         vocab_size=vocab_size,
         d_model=mc.decoder_dim,
         n_layers=mc.decoder_layers,
@@ -128,7 +129,7 @@ def main():
 
     # Data
     datasets = load_text_dataset(cfg.data)
-    collator = RAECollator(
+    collator = ARDecoderCollator(
         tokenizer=tokenizer,
         max_length=cfg.data.max_length,
         text_column=cfg.data.text_column,

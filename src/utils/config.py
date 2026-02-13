@@ -123,6 +123,7 @@ class BottleneckModelConfig:
 
     # Encoder
     d_latent: int = 256
+    n_latent_tokens: int = 1
     encoder_dim: int = 256
     encoder_layers: int = 4
     encoder_heads: int = 4

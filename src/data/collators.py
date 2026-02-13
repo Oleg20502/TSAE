@@ -10,8 +10,8 @@ from transformers import PreTrainedTokenizerBase
 
 
 @dataclass
-class RAECollator:
-    """Collator for the RAE-text model.
+class ARDecoderCollator:
+    """Collator for the autoencoder model with autregressive decoder.
 
     Tokenizes raw text and produces encoder inputs + decoder inputs (teacher
     forcing) in a single batch dict.

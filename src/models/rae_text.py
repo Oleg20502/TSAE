@@ -9,7 +9,7 @@ import torch.nn as nn
 
 from src.backbones.base_repr import BaseTextReprEncoder
 from src.models.detail_encoder import DetailEncoder
-from src.models.decoder import LatentConditionedDecoder
+from src.models.decoder import LatentAutoRegressiveDecoder
 from src.losses.reconstruction import reconstruction_loss
 from src.losses.semantic import semantic_consistency_loss
 
@@ -32,7 +32,7 @@ class RAEText(nn.Module):
         self,
         repr_encoder: BaseTextReprEncoder,
         detail_encoder: DetailEncoder,
-        decoder: LatentConditionedDecoder,
+        decoder: LatentAutoRegressiveDecoder,
         d_sem: int = 256,
         lambda_sem: float = 0.2,
         freeze_repr: bool = True,

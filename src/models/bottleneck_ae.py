@@ -1,4 +1,4 @@
-"""Bottleneck autoencoder: single-vector latent with independent encoder and decoder transformers."""
+"""Bottleneck autoencoder: latent token sequence with independent encoder and decoder transformers."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import torch.nn as nn
 from src.backbones.base_repr import BaseTextReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
-from src.models.decoder import LatentConditionedDecoder
+from src.models.decoder import LatentAutoRegressiveDecoder
 from src.losses.reconstruction import reconstruction_loss
 from src.losses.semantic import semantic_consistency_loss
 
@@ -19,15 +19,15 @@ class BottleneckAE(nn.Module):
     """Bottleneck Autoencoder for Text.
 
     Composes:
-        encoder           – standalone Transformer that compresses text to a
-                            single latent vector (B, 1, d_latent)
+        encoder           – standalone Transformer that compresses text to
+                            n_latent_tokens (B, n_latent_tokens, d_latent)
         repr_encoder      – frozen SimCSE backbone used *only* as a semantic
                             target for the semantic loss
         latent_aug        – optional noise / feature-dropout augmentation
                             applied to the latent during training
         decoder           – Transformer decoder that reconstructs text from
                             the (augmented) latent via cross-attention
-        sem_proj          – projects the latent to the repr_encoder's
+        sem_proj          – projects mean-pooled latent to the repr_encoder's
                             sentence-embedding space for the semantic loss
 
     The ``forward`` method returns a dict containing a ``"loss"`` key so the
@@ -37,7 +37,7 @@ class BottleneckAE(nn.Module):
     def __init__(
         self,
         encoder: BottleneckEncoder,
-        decoder: LatentConditionedDecoder,
+        decoder: LatentAutoRegressiveDecoder,
         repr_encoder: BaseTextReprEncoder,
         latent_aug: LatentAugmentation | None = None,
         lambda_sem: float = 0.2,
@@ -79,11 +79,11 @@ class BottleneckAE(nn.Module):
         """Produce the bottleneck latent and the SimCSE semantic target.
 
         Returns:
-            z:        (B, 1, d_latent) encoder latent vector.
+            z:        (B, n_latent_tokens, d_latent) encoder latent sequence.
             sent_emb: (B, D_s) SimCSE sentence embedding (detached target).
         """
         # Encoder produces latent from raw token ids
-        z = self.encoder(input_ids, attention_mask)  # (B, 1, d_latent)
+        z = self.encoder(input_ids, attention_mask)  # (B, n_latent_tokens, d_latent)
 
         # SimCSE produces the semantic target (no gradient needed)
         with torch.no_grad():
@@ -115,7 +115,7 @@ class BottleneckAE(nn.Module):
         z_aug = self.latent_aug(z)
 
         # Project latent to decoder dim
-        z_dec = self.latent_to_dec(z_aug)  # (B, 1, d_dec)
+        z_dec = self.latent_to_dec(z_aug)  # (B, n_latent_tokens, d_dec)
 
         # Decode
         logits, _dec_hidden = self.decoder(
@@ -129,7 +129,8 @@ class BottleneckAE(nn.Module):
         l_recon = reconstruction_loss(logits, labels)
 
         # Semantic loss (cosine similarity between projected latent and SimCSE embedding)
-        z_sem = self.sem_proj(z.squeeze(1))  # (B, d_latent) -> (B, D_s)
+        z_pooled = z.mean(dim=1)  # (B, n_latent_tokens, d_latent) -> (B, d_latent)
+        z_sem = self.sem_proj(z_pooled)  # (B, D_s)
         l_sem = semantic_consistency_loss(z_sem, sent_emb)
 
         loss = l_recon + self.lambda_sem * l_sem

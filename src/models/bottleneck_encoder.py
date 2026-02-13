@@ -1,4 +1,4 @@
-"""Bottleneck encoder: compresses text into a single latent vector via self-attn + cross-attn transformer."""
+"""Bottleneck encoder: compresses text into latent tokens via self-attn + cross-attn transformer."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ import torch.nn as nn
 # ---------------------------------------------------------------------------
 
 class BottleneckEncoderBlock(nn.Module):
-    """One encoder block: self-attn on text tokens -> cross-attn (latent query -> text KV) -> FFN.
+    """One encoder block: self-attn on text tokens -> cross-attn (latent queries -> text KV) -> FFN.
 
     The self-attention refines text token representations.
-    The cross-attention lets a single learned latent query gather information
+    The cross-attention lets learned latent queries gather information
     from the (refined) text tokens.
     """
 
@@ -34,7 +34,7 @@ class BottleneckEncoderBlock(nn.Module):
         )
         self.norm2 = nn.LayerNorm(d_model)
 
-        # Feed-forward (applied to the latent query)
+        # Feed-forward (applied to each latent query position)
         self.ffn = nn.Sequential(
             nn.Linear(d_model, d_ff),
             nn.GELU(),
@@ -53,12 +53,12 @@ class BottleneckEncoderBlock(nn.Module):
         """
         Args:
             text_tokens:          (B, T, D) text token embeddings.
-            latent_query:         (B, 1, D) current latent query.
+            latent_query:         (B, L, D) latent query tokens (L = n_latent_tokens).
             text_key_padding_mask: (B, T) True where padded (ignored positions).
 
         Returns:
             text_tokens: (B, T, D) refined text tokens (after self-attention).
-            latent_query: (B, 1, D) updated latent query.
+            latent_query: (B, L, D) updated latent query tokens.
         """
         # 1) Self-attention on text tokens
         sa_out, _ = self.self_attn(
@@ -89,13 +89,13 @@ class BottleneckEncoderBlock(nn.Module):
 # ---------------------------------------------------------------------------
 
 class BottleneckEncoder(nn.Module):
-    """Transformer encoder that compresses text into a single latent vector.
+    """Transformer encoder that compresses text into a sequence of latent tokens.
 
     Has its own token and positional embeddings (independent from any backbone).
-    Uses N blocks of self-attention on text + cross-attention for a single
-    learned latent query to gather information from the text.
+    Uses N blocks of self-attention on text + cross-attention for n_latent_tokens
+    learned latent queries to gather information from the text.
 
-    Returns the latent vector of shape ``(B, 1, d_latent)``.
+    Returns the latent sequence of shape ``(B, n_latent_tokens, d_latent)``.
     """
 
     def __init__(
@@ -103,6 +103,7 @@ class BottleneckEncoder(nn.Module):
         vocab_size: int,
         d_model: int = 256,
         d_latent: int = 256,
+        n_latent_tokens: int = 1,
         n_layers: int = 4,
         n_heads: int = 4,
         d_ff: int = 512,
@@ -113,6 +114,7 @@ class BottleneckEncoder(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.d_latent = d_latent
+        self.n_latent_tokens = n_latent_tokens
         self.max_length = max_length
         self.pad_token_id = pad_token_id
 
@@ -121,8 +123,8 @@ class BottleneckEncoder(nn.Module):
         self.pos_emb = nn.Embedding(max_length, d_model)
         self.emb_dropout = nn.Dropout(dropout)
 
-        # Learned latent query token
-        self.latent_query = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+        # Learned latent query tokens (1, n_latent_tokens, d_model)
+        self.latent_query = nn.Parameter(torch.randn(1, n_latent_tokens, d_model) * 0.02)
 
         # Transformer blocks
         self.blocks = nn.ModuleList(
@@ -163,7 +165,7 @@ class BottleneckEncoder(nn.Module):
             attention_mask:  (B, T) 1 for real tokens, 0 for padding.
 
         Returns:
-            latent: (B, 1, d_latent) compressed latent vector.
+            latent: (B, n_latent_tokens, d_latent) compressed latent sequence.
         """
         B, T = input_ids.shape
         device = input_ids.device
@@ -178,15 +180,15 @@ class BottleneckEncoder(nn.Module):
         if attention_mask is not None:
             text_kp_mask = attention_mask.eq(0)  # (B, T)
 
-        # Expand learned latent query for the batch
-        latent_query = self.latent_query.expand(B, -1, -1)  # (B, 1, d_model)
+        # Expand learned latent queries for the batch (B, n_latent_tokens, d_model)
+        latent_query = self.latent_query.expand(B, -1, -1)
 
         # Run through encoder blocks
         for block in self.blocks:
             text_tokens, latent_query = block(text_tokens, latent_query, text_kp_mask)
 
         # Final layer norm and projection
-        latent = self.ln_f(latent_query)         # (B, 1, d_model)
-        latent = self.latent_proj(latent)         # (B, 1, d_latent)
+        latent = self.ln_f(latent_query)         # (B, n_latent_tokens, d_model)
+        latent = self.latent_proj(latent)         # (B, n_latent_tokens, d_latent)
 
         return latent

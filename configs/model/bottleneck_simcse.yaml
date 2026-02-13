@@ -5,6 +5,7 @@ model:
 
   # Encoder (standalone transformer)
   d_latent: 256
+  n_latent_tokens: 4
   encoder_dim: 256
   encoder_layers: 4
   encoder_heads: 4
