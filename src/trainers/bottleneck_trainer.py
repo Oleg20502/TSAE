@@ -11,7 +11,7 @@ class BottleneckTrainer(Trainer):
     The repr_encoder is always frozen, so no separate parameter group.
     """
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch = None):
         outputs = model(**inputs)
         loss = outputs["loss"]
 
