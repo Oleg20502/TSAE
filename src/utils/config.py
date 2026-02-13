@@ -18,8 +18,8 @@ from dacite import from_dict, Config as DaciteConfig
 class DataConfig:
     """Configuration for the data pipeline."""
 
-    dataset_name: str = "wikipedia"
-    dataset_config: str = "20220301.en"
+    dataset_name: str = "wikimedia/wikipedia"
+    dataset_config: str = "20231101.en"
     text_column: str = "text"
     max_length: int = 128
     num_train_samples: Optional[int] = None  # None = use full split

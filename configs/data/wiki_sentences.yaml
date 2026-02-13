@@ -1,6 +1,7 @@
 data:
-  dataset_name: wikipedia
-  dataset_config: "20220301.en"
+  # Script-based "wikipedia" is deprecated; use Parquet-based wikimedia/wikipedia
+  dataset_name: wikimedia/wikipedia
+  dataset_config: "20231101.en"
   text_column: text
   max_length: 16
   num_train_samples: 100000

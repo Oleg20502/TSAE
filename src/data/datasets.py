@@ -25,7 +25,7 @@ def load_text_dataset(cfg: DataConfig) -> dict[str, Dataset]:
     ds = load_dataset(cfg.dataset_name, cfg.dataset_config, split="train", trust_remote_code=True)
 
     # If the text column contains long articles, split into sentences / paragraphs
-    if cfg.dataset_name == "wikipedia":
+    if "wikipedia" in cfg.dataset_name:
         ds = _split_wiki_paragraphs(ds, text_column=cfg.text_column)
 
     # Shuffle and subsample
@@ -57,8 +57,6 @@ def _split_wiki_paragraphs(ds: Dataset, text_column: str = "text") -> Dataset:
 
     ds = ds.map(_split, batched=False, remove_columns=ds.column_names)
     # Flatten the list column
-    # After mapping, text_column contains lists -> use flatten-style select
-    # Actually, datasets .map with lists creates nested; let's use a different approach
     all_texts = []
     for example in ds:
         texts = example[text_column]
