@@ -2,8 +2,8 @@
 # For 1080 Ti (Pascal): on that server use pyproject.pascal.toml (see envs/README.md or copy over pyproject.toml).
 
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "tsae"
