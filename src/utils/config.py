@@ -25,6 +25,14 @@ class DataConfig:
     num_train_samples: Optional[int] = None  # None = use full split
     num_val_samples: Optional[int] = 2000
     seed: int = 42
+    # If set, load train/validation from this dir (from prepare_dataset script); no HF download or paragraph split at train time
+    preprocessed_dir: Optional[str] = None
+    # Used only by prepare_dataset: max articles to process before paragraph split (avoids processing full 6M+ wiki)
+    max_articles_for_paragraph_split: Optional[int] = 100_000
+    # prepare_dataset: num_proc for ds.map (paragraph split); None = 1 (single process)
+    prepare_num_proc: Optional[int] = None
+    # prepare_dataset: articles per map batch in paragraph split
+    prepare_paragraph_batch_size: Optional[int] = 2000
 
 
 # ---------------------------------------------------------------------------

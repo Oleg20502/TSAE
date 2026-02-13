@@ -33,3 +33,18 @@ If you get `MissingCUDAException: CUDA_HOME does not exist`, set it before train
    ```
 
 Optional: to remove the DeepSpeed `async_io` / `libaio` warning on Debian/Ubuntu, install `libaio-dev` (e.g. `sudo apt-get install libaio-dev`). Training runs without it; only async I/O is affected.
+
+## Dataset preparation (recommended for Wikipedia)
+
+To avoid long preprocessing at training time (paragraph split + shuffle on 6M+ rows), prepare the dataset once and load from disk when training:
+
+Run once; downloads HF dataset, splits paragraphs, shuffles, writes train/val:
+   ```bash
+   python scripts/prepare_dataset.py --configs configs/data/wiki_sentences.yaml
+   ```
+
+## Launching training
+
+   ```bash
+   accelerate launch scripts/train_bottleneck.py --configs configs/data/wiki_sentences.yaml configs/model/bottleneck_simcse.yaml configs/train/bottleneck_autoencoder.yaml
+   ```

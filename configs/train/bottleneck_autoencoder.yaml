@@ -1,12 +1,11 @@
 train:
   output_dir: outputs/bottleneck
   lr: 1.0e-4
-  repr_lr: 1.0e-5
   weight_decay: 0.01
   epochs: 5
   warmup_steps: 500
-  batch_size: 64
-  gradient_accumulation_steps: 1
+  batch_size: 4
+  gradient_accumulation_steps: 2
   logging_steps: 50
   eval_steps: 500
   save_steps: 1000

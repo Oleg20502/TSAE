@@ -1,5 +1,4 @@
 data:
-  # Script-based "wikipedia" is deprecated; use Parquet-based wikimedia/wikipedia
   dataset_name: wikimedia/wikipedia
   dataset_config: "20231101.en"
   text_column: text
@@ -7,3 +6,8 @@ data:
   num_train_samples: 100000
   num_val_samples: 2000
   seed: 42
+  preprocessed_dir: data/wiki_prepared
+  # Optional: limit articles before paragraph split (used only by prepare_dataset; default 100_000)
+  max_articles_for_paragraph_split: 100000
+  prepare_num_proc: 4
+  prepare_paragraph_batch_size: 2000
