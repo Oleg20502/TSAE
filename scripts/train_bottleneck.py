@@ -20,7 +20,8 @@ from src.models.decoder import AutoRegressiveDecoder
 from src.models.bottleneck_ae import BottleneckAE
 from src.data.datasets import load_text_dataset
 from src.data.collators import ARDecoderCollator
-from src.trainers import BottleneckTrainer
+from src.eval.reconstruction_metrics import compute_metrics
+from src.trainers import BottleneckTrainer, preprocess_logits_for_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +147,8 @@ def main():
         train_dataset=datasets["train"],
         eval_dataset=datasets["validation"],
         data_collator=collator,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
+        compute_metrics=compute_metrics,
     )
 
     # Train

@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate a trained Stage-1 RAE-text autoencoder."""
-
-from __future__ import annotations
+"""Evaluate a trained RAE-text autoencoder."""
 
 import argparse
 import json
@@ -14,10 +12,7 @@ from transformers import AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.utils.config import merge_configs, ExperimentConfig
-from src.backbones.simcse_repr import SimCSEReprEncoder
-from src.models.detail_encoder import DetailEncoder
-from src.models.decoder import AutoRegressiveDecoder
+from src.utils.config import merge_configs
 from src.models.rae_text import RAEText
 from src.data.datasets import load_text_dataset
 from src.data.collators import ARDecoderCollator
@@ -27,7 +22,7 @@ from src.eval.reconstruction_metrics import (
     perplexity_from_loss,
 )
 from src.eval.semantic_metrics import cosine_sim_batch
-from scripts.train_stage1 import build_model
+from scripts.train_rae_style import build_model
 
 
 @torch.no_grad()
