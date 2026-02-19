@@ -33,6 +33,10 @@ class DataConfig:
     prepare_num_proc: Optional[int] = None
     # prepare_dataset: articles per map batch in paragraph split
     prepare_paragraph_batch_size: Optional[int] = 2000
+    # FineWeb: chunk each document into fixed-length segments (GPT-2 tokens). None = no chunking.
+    chunk_size_tokens: Optional[int] = None
+    # Tokenizer for FineWeb chunking (e.g. "gpt2")
+    gpt2_tokenizer_name: str = "gpt2"
 
 
 # ---------------------------------------------------------------------------

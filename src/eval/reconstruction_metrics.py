@@ -1,7 +1,5 @@
 """Reconstruction quality metrics for Stage-1 evaluation."""
 
-from __future__ import annotations
-
 from typing import Dict, List
 
 import editdistance

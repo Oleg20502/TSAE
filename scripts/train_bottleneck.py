@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Training script for the Bottleneck autoencoder."""
 
-from __future__ import annotations
-
 import argparse
 import sys
 from pathlib import Path

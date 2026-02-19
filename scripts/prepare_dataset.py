@@ -8,8 +8,6 @@ Example:
   # Then in your train config set data.preprocessed_dir: data/wiki_prepared
 """
 
-from __future__ import annotations
-
 import argparse
 import sys
 from pathlib import Path
@@ -20,7 +18,7 @@ from datasets import load_dataset
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.utils.config import merge_bottleneck_configs
-from src.data.datasets import _split_wiki_paragraphs_batched
+from src.data.datasets import _split_wiki_paragraphs_batched, _chunk_fineweb_batched
 
 
 def main() -> None:
@@ -45,12 +43,18 @@ def main() -> None:
     num_proc = dc.prepare_num_proc or 1
     batch_size = dc.prepare_paragraph_batch_size or 2000
 
+    is_fineweb = "fineweb" in dc.dataset_name.lower()
+    chunk_size = dc.chunk_size_tokens
+
     print(f"Dataset: {dc.dataset_name} / {dc.dataset_config}")
     print(f"Output: {out}")
     print(f"Train samples: {dc.num_train_samples}, Val samples: {dc.num_val_samples}")
     max_articles = dc.max_articles_for_paragraph_split or 100_000
-    print(f"Max articles to process (before paragraph split): {max_articles}")
-    print(f"Paragraph split: num_proc={num_proc or 1}, batch_size={batch_size}")
+    print(f"Max articles to process (before split/chunk): {max_articles}")
+    if is_fineweb and chunk_size:
+        print(f"FineWeb chunking: chunk_size_tokens={chunk_size}, num_proc={num_proc or 1}")
+    else:
+        print(f"Paragraph split: num_proc={num_proc or 1}, batch_size={batch_size}")
 
     # Load full split from HF (streaming not used; we subsample first to limit work)
     print("Loading dataset from HuggingFace...")
@@ -63,12 +67,25 @@ def main() -> None:
     n_total = len(ds)
     print(f"Loaded {n_total:,} rows.")
 
-    # Subsample articles before expensive paragraph split
+    # Subsample before expensive map
     n_take = min(max_articles, n_total)
     ds = ds.shuffle(seed=dc.seed).select(range(n_take))
-    print(f"Subsampled to {n_take:,} articles, splitting into paragraphs...")
+    print(f"Subsampled to {n_take:,} documents.")
 
-    if "wikipedia" in dc.dataset_name:
+    if is_fineweb and chunk_size:
+        print("Chunking by GPT-2 tokens...")
+        chunk_batch_size = getattr(dc, "prepare_chunk_batch_size", None) or 500
+        ds = _chunk_fineweb_batched(
+            ds,
+            text_column=dc.text_column,
+            chunk_size_tokens=chunk_size,
+            tokenizer_name=dc.gpt2_tokenizer_name,
+            batch_size=chunk_batch_size,
+            num_proc=num_proc,
+            drop_incomplete=True,
+        )
+    elif "wikipedia" in dc.dataset_name:
+        print("Splitting into paragraphs...")
         ds = _split_wiki_paragraphs_batched(
             ds,
             text_column=dc.text_column,
@@ -78,7 +95,7 @@ def main() -> None:
     # else: use ds as-is (e.g. already one text per row)
 
     n_after = len(ds)
-    print(f"After paragraph split: {n_after:,} text rows.")
+    print(f"After preprocessing: {n_after:,} text rows.")
 
     # Shuffle and split train / validation
     ds = ds.shuffle(seed=dc.seed)
