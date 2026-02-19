@@ -4,8 +4,9 @@
 Run once before training. Training then loads from preprocessed_dir and skips heavy preprocessing.
 
 Example:
-  python scripts/prepare_dataset.py --configs configs/data/wiki_sentences.yaml configs/train/bottleneck_autoencoder.yaml --output-dir data/wiki_prepared
-  # Then in your train config set data.preprocessed_dir: data/wiki_prepared
+  # Set data.preprocessed_dir in configs/preprocess/wiki_sentences.yaml
+  python scripts/prepare_dataset.py --configs configs/preprocess/wiki_sentences.yaml
+  # Set data.preprocessed_dir in configs/datasets/wiki_sentences.yaml
 """
 
 import argparse

@@ -4,14 +4,14 @@ data:
   dataset_name: HuggingFaceFW/fineweb
   dataset_config: sample-10BT
   text_column: text
-  max_length: 128
-  chunk_size_tokens: 128   # chunk each document into 128 GPT-2 tokens
+  chunk_size_tokens: 16   # chunk each document into 128 GPT-2 tokens
   gpt2_tokenizer_name: gpt2
   num_train_samples: null  # use all chunks after preprocessing
-  num_val_samples: 2000
+  num_val_samples: 10000
   seed: 42
+  cache_dir: /datasets/
   preprocessed_dir: data/fineweb_10bt_prepared
-  # Max documents to process before chunking (prepare_dataset); null = process full split
+  # Max documents to process before chunking; null = process full split
   max_articles_for_paragraph_split: null
-  prepare_num_proc: 8
-  prepare_paragraph_batch_size: 2000
+  prepare_num_proc: 32
+  prepare_paragraph_batch_size: 20000

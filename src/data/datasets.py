@@ -59,43 +59,10 @@ def chunk_text_by_gpt2_tokens(
 def load_text_dataset(cfg: DataConfig) -> dict[str, Dataset]:
     """Load train/validation splits.
 
-    If cfg.preprocessed_dir is set, loads from disk (output of prepare_dataset script).
-    Otherwise loads from HuggingFace, runs paragraph split for Wikipedia, shuffle, and subsample.
+    Loads dataset from disk.
     """
-    if cfg.preprocessed_dir is not None and (Path(cfg.preprocessed_dir) / "train").exists():
-        train_ds = load_from_disk(str(Path(cfg.preprocessed_dir) / "train"))
-        val_ds = load_from_disk(str(Path(cfg.preprocessed_dir) / "validation"))
-        return {"train": train_ds, "validation": val_ds}
-
-    ds = load_dataset(cfg.dataset_name, cfg.dataset_config, split="train", trust_remote_code=True)
-
-    if "fineweb" in cfg.dataset_name.lower() and (cfg.chunk_size_tokens or 0) > 0:
-        ds = _chunk_fineweb_batched(
-            ds,
-            text_column=cfg.text_column,
-            chunk_size_tokens=cfg.chunk_size_tokens,
-            tokenizer_name=cfg.gpt2_tokenizer_name,
-            batch_size=500,
-            num_proc=cfg.prepare_num_proc,
-            drop_incomplete=True,
-        )
-    elif "wikipedia" in cfg.dataset_name:
-        ds = _split_wiki_paragraphs(ds, text_column=cfg.text_column)
-
-    ds = ds.shuffle(seed=cfg.seed)
-
-    n_train = cfg.num_train_samples or len(ds)
-    n_val = cfg.num_val_samples or 2000
-    total_needed = n_train + n_val
-
-    if total_needed > len(ds):
-        total_needed = len(ds)
-        n_val = min(n_val, total_needed // 10)
-        n_train = total_needed - n_val
-
-    train_ds = ds.select(range(n_train))
-    val_ds = ds.select(range(n_train, n_train + n_val))
-
+    train_ds = load_from_disk(str(Path(cfg.preprocessed_dir) / "train"))
+    val_ds = load_from_disk(str(Path(cfg.preprocessed_dir) / "validation"))
     return {"train": train_ds, "validation": val_ds}
 
 

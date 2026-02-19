@@ -1,4 +1,0 @@
-# Use after running: scripts/prepare_dataset.py --configs ... --output-dir data/wiki_prepared
-# Then pass this config when training so the trainer loads from disk instead of HF + paragraph split.
-data:
-  preprocessed_dir: data/wiki_prepared
