@@ -4,22 +4,23 @@
 Run once before training. Training then loads from preprocessed_dir and skips heavy preprocessing.
 
 Example:
-  # Set data.preprocessed_dir in configs/preprocess/wiki_sentences.yaml
-  python scripts/prepare_dataset.py --configs configs/preprocess/wiki_sentences.yaml
-  # Set data.preprocessed_dir in configs/datasets/wiki_sentences.yaml
+  python scripts/prepare_dataset.py --configs configs/preprocess/wikipedia_preprocess.yaml
+  # Then set data.preprocessed_dir in your train/dataset config to the preprocessed_dir from the preprocess config.
 """
 
 import argparse
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
+import yaml
 from datasets import load_dataset
 
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.utils.config import merge_bottleneck_configs
-from src.data.datasets import _split_wiki_paragraphs_batched, _chunk_fineweb_batched
+from src.data.datasets import _split_paragraphs_batched, _chunk_batched
 
 
 def main() -> None:
@@ -42,18 +43,21 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     num_proc = dc.prepare_num_proc or 1
-    batch_size = dc.prepare_paragraph_batch_size or 2000
-
-    is_fineweb = "fineweb" in dc.dataset_name.lower()
-    chunk_size = dc.chunk_size_tokens
+    batch_size = dc.preprocess_batch_size or 2000
+    mode = (dc.preprocess_mode or "paragraphs").strip().lower()
 
     print(f"Dataset: {dc.dataset_name} / {dc.dataset_config}")
     print(f"Output: {out}")
+    print(f"Preprocess mode: {mode}")
     print(f"Train samples: {dc.num_train_samples}, Val samples: {dc.num_val_samples}")
-    max_articles = dc.max_articles_for_paragraph_split or 100_000
-    print(f"Max articles to process (before split/chunk): {max_articles}")
-    if is_fineweb and chunk_size:
-        print(f"FineWeb chunking: chunk_size_tokens={chunk_size}, num_proc={num_proc or 1}")
+    max_samples = dc.max_samples or "null"
+    print(f"Max samples to process (before split/chunk): {max_samples}")
+    if mode == "chunks":
+        chunk_size = dc.chunk_size_tokens
+        if not chunk_size:
+            raise ValueError("preprocess_mode is 'chunks' but chunk_size_tokens is not set in config")
+        chunk_batch_size = dc.prepare_chunk_batch_size or 500
+        print(f"Chunking: chunk_size_tokens={chunk_size}, num_proc={num_proc or 1}, batch_size={chunk_batch_size}")
     else:
         print(f"Paragraph split: num_proc={num_proc or 1}, batch_size={batch_size}")
 
@@ -68,32 +72,33 @@ def main() -> None:
     n_total = len(ds)
     print(f"Loaded {n_total:,} rows.")
 
-    # Subsample before expensive map
-    n_take = min(max_articles, n_total)
+    # Subsample before expensive map (None = no limit)
+    n_take = min(max_samples, n_total) if max_samples is not None else n_total
     ds = ds.shuffle(seed=dc.seed).select(range(n_take))
     print(f"Subsampled to {n_take:,} documents.")
 
-    if is_fineweb and chunk_size:
+    if mode == "chunks":
         print("Chunking by GPT-2 tokens...")
-        chunk_batch_size = getattr(dc, "prepare_chunk_batch_size", None) or 500
-        ds = _chunk_fineweb_batched(
+        chunk_batch_size = dc.prepare_chunk_batch_size or 500
+        ds = _chunk_batched(
             ds,
             text_column=dc.text_column,
-            chunk_size_tokens=chunk_size,
+            chunk_size_tokens=dc.chunk_size_tokens,
             tokenizer_name=dc.gpt2_tokenizer_name,
             batch_size=chunk_batch_size,
             num_proc=num_proc,
-            drop_incomplete=True,
+            drop_incomplete=dc.drop_incomplete_chunks,
         )
-    elif "wikipedia" in dc.dataset_name:
+    elif mode == "paragraphs":
         print("Splitting into paragraphs...")
-        ds = _split_wiki_paragraphs_batched(
+        ds = _split_paragraphs_batched(
             ds,
             text_column=dc.text_column,
             batch_size=batch_size,
             num_proc=num_proc,
         )
-    # else: use ds as-is (e.g. already one text per row)
+    else:
+        print("Using dataset as-is (no split).")
 
     n_after = len(ds)
     print(f"After preprocessing: {n_after:,} text rows.")
@@ -116,7 +121,13 @@ def main() -> None:
     val_dir = out / "validation"
     train_ds.save_to_disk(str(train_dir))
     val_ds.save_to_disk(str(val_dir))
+
+    # Save preprocessing config to the same folder for reproducibility
+    preprocess_config_path = out / "preprocess_config.yaml"
+    with open(preprocess_config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(asdict(cfg), f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     print(f"Saved to {train_dir} and {val_dir}.")
+    print(f"Saved preprocessing config to {preprocess_config_path}.")
     print("In your train config set: data.preprocessed_dir:", output_dir)
 
 

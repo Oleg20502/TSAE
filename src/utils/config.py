@@ -1,7 +1,5 @@
 """Dataclass-based configuration with YAML loading."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -28,15 +26,19 @@ class DataConfig:
     # If set, load train/validation from this dir (from prepare_dataset script); no HF download or paragraph split at train time
     preprocessed_dir: Optional[str] = None
     # Used only by prepare_dataset: max articles to process before paragraph split (avoids processing full 6M+ wiki)
-    max_articles_for_paragraph_split: Optional[int] = 100_000
+    max_samples: Optional[int] = 100_000
     # prepare_dataset: num_proc for ds.map (paragraph split); None = 1 (single process)
     prepare_num_proc: Optional[int] = None
-    # prepare_dataset: articles per map batch in paragraph split
-    prepare_paragraph_batch_size: Optional[int] = 2000
-    # FineWeb: chunk each document into fixed-length segments (GPT-2 tokens). None = no chunking.
+    # batch size for preprocessing parallelization
+    preprocess_batch_size: Optional[int] = 2000
+    # prepare_dataset: preprocess mode — "paragraphs" (split by newlines) or "chunks" (fixed token length)
+    preprocess_mode: str = "paragraphs"
+    # When preprocess_mode == "chunks": chunk each document into fixed-length segments (GPT-2 tokens)
     chunk_size_tokens: Optional[int] = None
-    # Tokenizer for FineWeb chunking (e.g. "gpt2")
+    # When preprocess_mode == "chunks": tokenizer name (e.g. "gpt2")
     gpt2_tokenizer_name: str = "gpt2"
+    # When preprocess_mode == "chunks": drop last incomplete chunk per document
+    drop_incomplete_chunks: bool = True
 
 
 # ---------------------------------------------------------------------------

@@ -3,10 +3,12 @@ data:
   dataset_config: "20231101.en"
   text_column: text
   max_length: 16
+  max_samples: null
   num_train_samples: 100000
   num_val_samples: 2000
   seed: 42
   preprocessed_dir: data/wiki_prepared
-  max_articles_for_paragraph_split: 100000000
+  preprocess_mode: paragraphs
   prepare_num_proc: 16
   prepare_paragraph_batch_size: 10000
+  drop_incomplete: False  # only for preprocess_mode: chunks

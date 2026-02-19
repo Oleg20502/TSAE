@@ -1,7 +1,5 @@
 """Dataset wrappers for text data."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Optional
 
@@ -41,7 +39,7 @@ def chunk_text_by_gpt2_tokens(
     if not text or not text.strip():
         return []
     enc = tokenizer.encode(text, add_special_tokens=False)
-    if len(enc) <= chunk_size and (drop_incomplete and len(enc) < chunk_size):
+    if len(enc) < chunk_size and drop_incomplete:
         return []
     chunks = []
     for start in range(0, len(enc), chunk_size):
@@ -85,7 +83,7 @@ def _split_wiki_paragraphs(ds: Dataset, text_column: str = "text") -> Dataset:
     return Dataset.from_dict({text_column: all_texts})
 
 
-def _split_wiki_paragraphs_batched(
+def _split_paragraphs_batched(
     ds: Dataset,
     text_column: str = "text",
     batch_size: int = 2000,
@@ -117,7 +115,7 @@ def _split_wiki_paragraphs_batched(
     return Dataset.from_dict({text_column: all_texts})
 
 
-def _chunk_fineweb_batched(
+def _chunk_batched(
     ds: Dataset,
     text_column: str,
     chunk_size_tokens: int,
