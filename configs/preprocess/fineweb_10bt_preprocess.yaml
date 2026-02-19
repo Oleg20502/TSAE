@@ -11,9 +11,9 @@ data:
   gpt2_tokenizer_name: gpt2       # only for preprocess_mode: chunks
   max_samples: null
   num_train_samples: null
-  num_val_samples: 10000
+  num_val_samples: 100000
   seed: 42
-  cache_dir: /datasets/
-  preprocessed_dir: data/fineweb_10bt_prepared
+  cache_dir: /home/okashurin/okashurin/datasets/
+  preprocessed_dir: /home/okashurin/okashurin/datasets/fineweb_10bt_chunks
   prepare_num_proc: 32
   preprocess_batch_size: 20000

@@ -109,6 +109,7 @@ def main():
         gradient_accumulation_steps=tc.gradient_accumulation_steps,
         learning_rate=tc.lr,
         weight_decay=tc.weight_decay,
+        lr_scheduler_type="constant_with_warmup",
         warmup_steps=tc.warmup_steps,
         logging_steps=tc.logging_steps,
         eval_strategy="steps",

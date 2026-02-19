@@ -50,13 +50,13 @@ def main() -> None:
     print(f"Output: {out}")
     print(f"Preprocess mode: {mode}")
     print(f"Train samples: {dc.num_train_samples}, Val samples: {dc.num_val_samples}")
-    max_samples = dc.max_samples or "null"
-    print(f"Max samples to process (before split/chunk): {max_samples}")
+    max_samples = dc.max_samples
+    print(f"Max samples to process (before split/chunk): {max_samples or 'null'}")
     if mode == "chunks":
         chunk_size = dc.chunk_size_tokens
         if not chunk_size:
             raise ValueError("preprocess_mode is 'chunks' but chunk_size_tokens is not set in config")
-        chunk_batch_size = dc.prepare_chunk_batch_size or 500
+        chunk_batch_size = dc.preprocess_batch_size or 500
         print(f"Chunking: chunk_size_tokens={chunk_size}, num_proc={num_proc or 1}, batch_size={chunk_batch_size}")
     else:
         print(f"Paragraph split: num_proc={num_proc or 1}, batch_size={batch_size}")
@@ -79,13 +79,12 @@ def main() -> None:
 
     if mode == "chunks":
         print("Chunking by GPT-2 tokens...")
-        chunk_batch_size = dc.prepare_chunk_batch_size or 500
         ds = _chunk_batched(
             ds,
             text_column=dc.text_column,
             chunk_size_tokens=dc.chunk_size_tokens,
             tokenizer_name=dc.gpt2_tokenizer_name,
-            batch_size=chunk_batch_size,
+            batch_size=batch_size,
             num_proc=num_proc,
             drop_incomplete=dc.drop_incomplete_chunks,
         )
