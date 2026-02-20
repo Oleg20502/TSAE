@@ -36,7 +36,7 @@ class BottleneckAE(nn.Module):
         self,
         encoder: BottleneckEncoder,
         decoder: AutoRegressiveDecoder,
-        repr_encoder: BaseTextReprEncoder,
+        repr_encoder: BaseTextReprEncoder | None = None,
         latent_aug: LatentAugmentation | None = None,
         lambda_sem: float = 0.2,
         freeze_repr: bool = True,
@@ -58,10 +58,11 @@ class BottleneckAE(nn.Module):
             self.latent_to_dec = nn.Identity()
 
         # Semantic projection: latent -> repr_encoder sentence dim
-        self.sem_proj = nn.Linear(d_latent, repr_encoder.sent_dim)
+        if self.repr_encoder:
+            self.sem_proj = nn.Linear(d_latent, repr_encoder.sent_dim)
 
         # Freeze the representation backbone (used only for the semantic target)
-        if freeze_repr:
+        if freeze_repr and self.repr_encoder:
             for p in self.repr_encoder.parameters():
                 p.requires_grad = False
 
@@ -83,9 +84,10 @@ class BottleneckAE(nn.Module):
         # Encoder produces latent from raw token ids
         z = self.encoder(input_ids, attention_mask)  # (B, n_latent_tokens, d_latent)
 
-        # SimCSE produces the semantic target (no gradient needed)
-        with torch.no_grad():
-            sent_emb, _ = self.repr_encoder.encode(input_ids, attention_mask)
+        sent_emb = None
+        if self.repr_encoder:
+            with torch.no_grad():
+                sent_emb, _ = self.repr_encoder.encode(input_ids, attention_mask)
 
         return z, sent_emb
 
@@ -127,20 +129,29 @@ class BottleneckAE(nn.Module):
         l_recon = reconstruction_loss(logits, labels)
 
         # Semantic loss (cosine similarity between projected latent and SimCSE embedding)
-        z_pooled = z.mean(dim=1)  # (B, n_latent_tokens, d_latent) -> (B, d_latent)
-        z_sem = self.sem_proj(z_pooled)  # (B, D_s)
-        l_sem = semantic_consistency_loss(z_sem, sent_emb)
+        if self.repr_encoder:
+            z_pooled = z.mean(dim=1)  # (B, n_latent_tokens, d_latent) -> (B, d_latent)
+            z_sem = self.sem_proj(z_pooled)  # (B, D_s)
+            l_sem = semantic_consistency_loss(z_sem, sent_emb)
+            loss = l_recon + self.lambda_sem * l_sem
 
-        loss = l_recon + self.lambda_sem * l_sem
+            return {
+                "loss": loss,
+                "logits": logits,
+                "l_recon": l_recon.detach(),
+                "l_sem": l_sem.detach(),
+                "sent_emb": sent_emb.detach(),
+                "z": z.detach(),
+            }
+        else:
+            loss = l_recon 
+            return {
+                "loss": loss,
+                "logits": logits,
+                "l_recon": l_recon.detach(),
+                "z": z.detach(),
+            }
 
-        return {
-            "loss": loss,
-            "logits": logits,
-            "l_recon": l_recon.detach(),
-            "l_sem": l_sem.detach(),
-            "sent_emb": sent_emb.detach(),
-            "z": z.detach(),
-        }
 
     # ------------------------------------------------------------------
     # Greedy generation (for evaluation)

@@ -3,7 +3,8 @@
 from pathlib import Path
 from typing import Optional
 
-from datasets import load_dataset, load_from_disk, Dataset
+from datasets import load_dataset, load_from_disk, Dataset, concatenate_datasets
+from tqdm import tqdm
 
 from src.utils.config import DataConfig
 
@@ -149,8 +150,24 @@ def _chunk_batched(
         map_kwargs["num_proc"] = num_proc
 
     ds = ds.map(_chunk_batch, **map_kwargs)
-    all_texts = [chunk for row in ds for chunk in row[text_column]]
-    return Dataset.from_dict({text_column: all_texts})
+    # Flatten in batches to avoid one huge single-threaded list + from_dict
+    flatten_batch_size = 100_000
+    n_rows = len(ds)
+    batch_datasets = []
+    for start in tqdm(
+        range(0, n_rows, flatten_batch_size),
+        desc="Flattening chunks",
+        unit="batch",
+        total=(n_rows + flatten_batch_size - 1) // flatten_batch_size,
+    ):
+        end = min(start + flatten_batch_size, n_rows)
+        batch_ds = ds.select(range(start, end))
+        chunks = [chunk for row in batch_ds for chunk in row[text_column]]
+        if chunks:
+            batch_datasets.append(Dataset.from_dict({text_column: chunks}))
+    if not batch_datasets:
+        return Dataset.from_dict({text_column: []})
+    return concatenate_datasets(batch_datasets)
 
 
 def load_simple_text_dataset(texts: list[str], text_column: str = "text") -> Dataset:

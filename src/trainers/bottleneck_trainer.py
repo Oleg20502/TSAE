@@ -8,7 +8,7 @@ from transformers import Trainer
 
 # For fast handling of logits using gpu
 def preprocess_logits_for_metrics(logits, labels):
-    pred_ids = torch.argmax(logits, dim=-1)
+    pred_ids = torch.argmax(logits[0], dim=-1)
     return pred_ids
 
 
