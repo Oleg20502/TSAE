@@ -134,9 +134,9 @@ class AutoRegressiveDecoder(nn.Module):
 
     @staticmethod
     def _make_causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
-        """Upper-triangular -inf mask of shape (T, T)."""
+        """Causal mask (T, T): True = mask out (same type as key_padding_mask for MHA)."""
         return torch.triu(
-            torch.full((seq_len, seq_len), float("-inf"), device=device), diagonal=1
+            torch.ones(seq_len, seq_len, dtype=torch.bool, device=device), diagonal=1
         )
 
     # ------------------------------------------------------------------
