@@ -132,10 +132,10 @@ def compute_metrics(eval_pred) -> Dict[str, float]:
     label_ids = np.array(eval_pred.label_ids)
     ignore_index = -100
     return {
-        "reconstruction_accuracy": reconstruction_accuracy(
+        "token_accuracy": reconstruction_accuracy(
             predictions, label_ids, ignore_index=ignore_index
         ),
-        "exact_match": exact_match_accuracy(
+        "sequence_accuracy": exact_match_accuracy(
             predictions, label_ids, ignore_index=ignore_index
         ),
     }
