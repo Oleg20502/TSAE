@@ -6,8 +6,8 @@ NP=4
 
 accelerate launch --num_processes $NP --config_file ./accel_configs/fp32_ds_s2.yaml \
     scripts/train_bottleneck.py --configs \
-        configs/model/bottleneck_simcse.yaml \
-        configs/data/wiki_sentences.yaml \
+        configs/model/bottleneck_bert.yaml \
+        configs/datasets/fineweb_10bt.yaml \
         configs/train/bottleneck_autoencoder.yaml
 
 echo "done"

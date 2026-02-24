@@ -8,6 +8,6 @@ accelerate launch --num_processes $NP --config_file ./accel_configs/fp32_ds_s2.y
     scripts/train_bottleneck_no_repr.py --configs \
         configs/model/bottleneck_no_repr.yaml \
         configs/datasets/fineweb_10bt.yaml \
-        configs/train/bottleneck_autoencoder.yaml
+        configs/train/bottleneck_ae_no_repr.yaml
 
 echo "done"
