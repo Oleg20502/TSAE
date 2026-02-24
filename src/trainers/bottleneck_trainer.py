@@ -25,17 +25,29 @@ class BottleneckTrainer(Trainer):
         loss = outputs["loss"]
 
         if model.training:
-            # Log component losses at logging steps only
-            if self.state.global_step % self.args.logging_steps == 0:
-                logs = {}
-                if "l_recon" in outputs:
-                    logs["train_l_recon"] = outputs["l_recon"].item()
-                if "l_sem" in outputs:
-                    logs["train_l_sem"] = outputs["l_sem"].item()
-                if logs:
-                    self.log(logs)
+            # Cache component losses for the *next* optimizer step.
+            # During gradient accumulation, compute_loss is called multiple times
+            # while global_step is still the previous optimizer step.
+            step_key = int(self.state.global_step) + 1
+            if not hasattr(self, "_train_component_loss_cache"):
+                self._train_component_loss_cache = {}
+            slot = self._train_component_loss_cache.setdefault(
+                step_key,
+                {
+                    "l_recon_sum": 0.0,
+                    "l_recon_n": 0,
+                    "l_sem_sum": 0.0,
+                    "l_sem_n": 0,
+                },
+            )
+            if "l_recon" in outputs:
+                slot["l_recon_sum"] += outputs["l_recon"].item()
+                slot["l_recon_n"] += 1
+            if "l_sem" in outputs:
+                slot["l_sem_sum"] += outputs["l_sem"].item()
+                slot["l_sem_n"] += 1
         else:
-            # Eval: accumulate for mean over validation set (single pass)
+            # Eval: accumulate for mean over validation set
             if not hasattr(self, "_eval_recon_sum"):
                 self._eval_recon_sum = 0.0
                 self._eval_sem_sum = 0.0
@@ -50,26 +62,44 @@ class BottleneckTrainer(Trainer):
             return (loss, outputs)
         return loss
 
-    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
-        # Reset accumulators before the single eval pass
+    def log(self, logs, start_time=None):
+        # Merge component losses into the main training log line so everything
+        # (loss, grad_norm, lr, train_l_*) is emitted together.
+        merged_logs = dict(logs)
+        if "loss" in merged_logs and not any(k.startswith("eval_") for k in merged_logs):
+            # Trainer accumulates loss as sum over micro-batches; report mean per step.
+            merged_logs["loss"] = merged_logs["loss"] / self.args.gradient_accumulation_steps
+            cache = getattr(self, "_train_component_loss_cache", None)
+            if cache is not None:
+                step_key = int(self.state.global_step)
+                slot = cache.pop(step_key, None)
+                if slot is not None:
+                    if slot["l_recon_n"] > 0:
+                        merged_logs["train_l_recon"] = slot["l_recon_sum"] / slot["l_recon_n"]
+                    if slot["l_sem_n"] > 0:
+                        merged_logs["train_l_sem"] = slot["l_sem_sum"] / slot["l_sem_n"]
+        return super().log(merged_logs, start_time=start_time)
+
+    def evaluation_loop(self, dataloader, description, prediction_loss_only=None, ignore_keys=None, metric_key_prefix: str = "eval"):
+        # Reset accumulators before the eval pass
         self._eval_recon_sum = 0.0
         self._eval_sem_sum = 0.0
         self._eval_n = 0
 
-        metrics = super().evaluate(
-            eval_dataset=eval_dataset,
+        output = super().evaluation_loop(
+            dataloader=dataloader,
+            description=description,
+            prediction_loss_only=prediction_loss_only,
             ignore_keys=ignore_keys,
             metric_key_prefix=metric_key_prefix,
         )
 
-        # Add component losses from the same pass (no extra forward)
+        # Add component losses and perplexity so they are included when evaluate() logs
         if self._eval_n > 0:
-            metrics[f"{metric_key_prefix}_l_recon"] = self._eval_recon_sum / self._eval_n
-            metrics[f"{metric_key_prefix}_l_sem"] = self._eval_sem_sum / self._eval_n
-
-        # Perplexity = exp(eval_loss)
+            output.metrics[f"{metric_key_prefix}_l_recon"] = self._eval_recon_sum / self._eval_n
+            output.metrics[f"{metric_key_prefix}_l_sem"] = self._eval_sem_sum / self._eval_n
         loss_key = f"{metric_key_prefix}_loss"
-        if loss_key in metrics:
-            metrics[f"{metric_key_prefix}_perplexity"] = math.exp(metrics[loss_key])
+        if loss_key in output.metrics:
+            output.metrics[f"{metric_key_prefix}_perplexity"] = math.exp(output.metrics[loss_key])
 
-        return metrics
+        return output
