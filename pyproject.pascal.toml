@@ -1,5 +1,9 @@
-# TSAE – default env: A100 / Ampere and newer GPUs (bf16, TF32, recent CUDA).
-# For 1080 Ti (Pascal): see README.md Installation section.
+# TSAE – environment for Pascal GPUs (e.g. GTX 1080 Ti).
+# Recommended: create conda env from envs/conda-pascal.yaml (provides PyTorch + CUDA toolkit so
+# CUDA_HOME is set for DeepSpeed), then: cp pyproject.pascal.toml pyproject.toml && pip install -e .
+#
+# On Pascal: use fp16: true, bf16: false in train configs (no native bf16).
+# Avoid torch.compile(); use stock Trainer.
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -13,18 +17,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 
-dependencies = [
-    "torch>=2.1",
-    "transformers>=4.36",
-    "datasets>=2.16",
-    "peft",
-    "accelerate",
-    "deepspeed",
-    "sentence-transformers>=2.3",
-    "pyyaml>=6.0",
-    "dacite>=1.8",
-    "evaluate>=0.4",
-]
+# Runtime deps are provided by envs/conda-pascal.yaml. Use that env, then: pip install -e .
+dependencies = []
 
 [project.optional-dependencies]
 dev = [

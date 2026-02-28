@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.backbones.base_repr import BaseTextReprEncoder
 from src.models.detail_encoder import DetailEncoder
-from src.models.decoder import LatentConditionedDecoder
+from src.models.decoder import AutoRegressiveDecoder
 from src.models.rae_text import RAEText
 
 
@@ -69,7 +69,7 @@ def detail_enc():
 
 @pytest.fixture
 def decoder():
-    return LatentConditionedDecoder(
+    return AutoRegressiveDecoder(
         vocab_size=VOCAB, d_model=D_DEC, n_layers=2, n_heads=N_HEADS,
         d_ff=D_DEC * 2, max_length=T, pad_token_id=0,
     )

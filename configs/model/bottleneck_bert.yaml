@@ -1,0 +1,29 @@
+model:
+  # Backbone
+  backbone_name: "sentence-transformers/nli-bert-base"
+  freeze_repr: true
+
+  # Encoder
+  d_latent: 768
+  n_latent_tokens: 2
+  encoder_dim: 768
+  encoder_layers: 6
+  encoder_heads: 12
+  encoder_ff_dim: 3072
+  encoder_dropout: 0.1
+  max_encoder_length: 16
+
+  # Decoder
+  decoder_layers: 6
+  decoder_heads: 12
+  decoder_dim: 768
+  decoder_ff_dim: 3072
+  decoder_dropout: 0.1
+  max_decoder_length: 16
+
+  # Latent augmentation
+  noise_std: 0.2
+  feature_dropout_p: 0.0
+
+  # Loss
+  lambda_sem: 0.2

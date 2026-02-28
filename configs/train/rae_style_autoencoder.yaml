@@ -1,5 +1,5 @@
 train:
-  output_dir: outputs/stage1
+  output_dir: outputs/rae_style
   lr: 1.0e-4
   repr_lr: 1.0e-5
   weight_decay: 0.01

@@ -1,48 +1,67 @@
 """Dataset wrappers for text data."""
 
-from __future__ import annotations
-
+from pathlib import Path
 from typing import Optional
 
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, load_from_disk, Dataset, concatenate_datasets
+from tqdm import tqdm
 
 from src.utils.config import DataConfig
 
+# Lazy GPT-2 tokenizer for FineWeb chunking (shared across calls)
+_GPT2_TOKENIZER = None
 
-def load_text_dataset(cfg: DataConfig) -> dict[str, Dataset]:
-    """Load and prepare train/validation splits of a text dataset.
 
-    For Wikipedia, each article is split into sentences (simple paragraph
-    splitting).  The function returns a dict with ``"train"`` and ``"validation"``
-    keys.
+def _get_gpt2_tokenizer(name: str = "gpt2"):
+    global _GPT2_TOKENIZER
+    if _GPT2_TOKENIZER is None:
+        from transformers import AutoTokenizer
+        _GPT2_TOKENIZER = AutoTokenizer.from_pretrained(name)
+    return _GPT2_TOKENIZER
+
+
+def chunk_text_by_gpt2_tokens(
+    text: str,
+    tokenizer,
+    chunk_size: int,
+    drop_incomplete: bool = True,
+) -> list[str]:
+    """Split a single text into chunks of fixed length in GPT-2 tokens.
 
     Args:
-        cfg: DataConfig with dataset name, column, max samples, etc.
+        text: Raw document text.
+        tokenizer: GPT-2 tokenizer (or compatible).
+        chunk_size: Number of tokens per chunk.
+        drop_incomplete: If True, drop the last chunk when it has fewer than chunk_size tokens.
 
     Returns:
-        Dictionary with ``"train"`` and ``"validation"`` HuggingFace Datasets.
+        List of decoded text chunks (each chunk has exactly chunk_size tokens, or fewer only if not drop_incomplete).
     """
-    ds = load_dataset(cfg.dataset_name, cfg.dataset_config, split="train", trust_remote_code=True)
+    if not text or not text.strip():
+        return []
+    enc = tokenizer.encode(text, add_special_tokens=False)
+    if len(enc) < chunk_size and drop_incomplete:
+        return []
+    chunks = []
+    for start in range(0, len(enc), chunk_size):
+        end = start + chunk_size
+        if end > len(enc):
+            if drop_incomplete:
+                break
+        chunk_ids = enc[start:end]
+        if not chunk_ids:
+            continue
+        chunks.append(tokenizer.decode(chunk_ids))
+    return chunks
 
-    # If the text column contains long articles, split into sentences / paragraphs
-    if cfg.dataset_name == "wikipedia":
-        ds = _split_wiki_paragraphs(ds, text_column=cfg.text_column)
 
-    # Shuffle and subsample
-    ds = ds.shuffle(seed=cfg.seed)
+def load_text_dataset(cfg: DataConfig) -> dict[str, Dataset]:
+    """Load train/validation splits.
 
-    n_train = cfg.num_train_samples or len(ds)
-    n_val = cfg.num_val_samples or 2000
-    total_needed = n_train + n_val
-
-    if total_needed > len(ds):
-        total_needed = len(ds)
-        n_val = min(n_val, total_needed // 10)
-        n_train = total_needed - n_val
-
-    train_ds = ds.select(range(n_train))
-    val_ds = ds.select(range(n_train, n_train + n_val))
-
+    Loads dataset from disk.
+    """
+    train_ds = load_from_disk(str(Path(cfg.preprocessed_dir) / "train"))
+    val_ds = load_from_disk(str(Path(cfg.preprocessed_dir) / "validation"))
     return {"train": train_ds, "validation": val_ds}
 
 
@@ -51,14 +70,10 @@ def _split_wiki_paragraphs(ds: Dataset, text_column: str = "text") -> Dataset:
 
     def _split(example):
         text = example[text_column]
-        # Split on double newlines (paragraphs) then filter short ones
         paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) > 30]
         return {text_column: paragraphs}
 
     ds = ds.map(_split, batched=False, remove_columns=ds.column_names)
-    # Flatten the list column
-    # After mapping, text_column contains lists -> use flatten-style select
-    # Actually, datasets .map with lists creates nested; let's use a different approach
     all_texts = []
     for example in ds:
         texts = example[text_column]
@@ -66,8 +81,93 @@ def _split_wiki_paragraphs(ds: Dataset, text_column: str = "text") -> Dataset:
             all_texts.extend(texts)
         else:
             all_texts.append(texts)
-
     return Dataset.from_dict({text_column: all_texts})
+
+
+def _split_paragraphs_batched(
+    ds: Dataset,
+    text_column: str = "text",
+    batch_size: int = 2000,
+    num_proc: Optional[int] = None,
+) -> Dataset:
+    """Paragraph split in batches. Returns one row per article with list of paragraphs; we flatten to one row per paragraph (works with num_proc)."""
+    def _split_batch(examples: dict) -> dict:
+        out: list[list[str]] = []
+        for text in examples[text_column]:
+            if not isinstance(text, str):
+                out.append([])
+                continue
+            paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) > 30]
+            out.append(paragraphs)
+        return {text_column: out}
+
+    map_kwargs: dict = {
+        "batched": True,
+        "batch_size": batch_size,
+        "remove_columns": [c for c in ds.column_names if c != text_column],
+        "desc": "Splitting paragraphs",
+    }
+    if num_proc is not None and num_proc > 1:
+        map_kwargs["num_proc"] = num_proc
+
+    ds = ds.map(_split_batch, **map_kwargs)
+    # Flatten: each row is list of paragraphs
+    all_texts = [p for row in ds for p in row[text_column]]
+    return Dataset.from_dict({text_column: all_texts})
+
+
+def _chunk_batched(
+    ds: Dataset,
+    text_column: str,
+    chunk_size_tokens: int,
+    tokenizer_name: str = "gpt2",
+    batch_size: int = 500,
+    num_proc: Optional[int] = None,
+    drop_incomplete: bool = True,
+) -> Dataset:
+    """Split each document into fixed-length (GPT-2 token) chunks; one row per chunk."""
+    tokenizer = _get_gpt2_tokenizer(tokenizer_name)
+
+    def _chunk_batch(examples: dict) -> dict:
+        out: list[list[str]] = []
+        for text in examples[text_column]:
+            if not isinstance(text, str):
+                out.append([])
+                continue
+            chunks = chunk_text_by_gpt2_tokens(
+                text, tokenizer, chunk_size_tokens, drop_incomplete=drop_incomplete
+            )
+            out.append(chunks)
+        return {text_column: out}
+
+    map_kwargs: dict = {
+        "batched": True,
+        "batch_size": batch_size,
+        "remove_columns": [c for c in ds.column_names if c != text_column],
+        "desc": "Chunking by GPT-2 tokens",
+    }
+    if num_proc is not None and num_proc > 1:
+        map_kwargs["num_proc"] = num_proc
+
+    ds = ds.map(_chunk_batch, **map_kwargs)
+    # Flatten in batches to avoid one huge single-threaded list + from_dict
+    flatten_batch_size = 100_000
+    n_rows = len(ds)
+    batch_datasets = []
+    for start in tqdm(
+        range(0, n_rows, flatten_batch_size),
+        desc="Flattening chunks",
+        unit="batch",
+        total=(n_rows + flatten_batch_size - 1) // flatten_batch_size,
+    ):
+        end = min(start + flatten_batch_size, n_rows)
+        batch_ds = ds.select(range(start, end))
+        chunks = [chunk for row in batch_ds for chunk in row[text_column]]
+        if chunks:
+            batch_datasets.append(Dataset.from_dict({text_column: chunks}))
+    if not batch_datasets:
+        return Dataset.from_dict({text_column: []})
+    return concatenate_datasets(batch_datasets)
 
 
 def load_simple_text_dataset(texts: list[str], text_column: str = "text") -> Dataset:

@@ -1,92 +1,57 @@
 #!/usr/bin/env python3
-"""Stage-1 training script: train the RAE-text autoencoder."""
-
-from __future__ import annotations
+"""Training script for the Bottleneck autoencoder."""
 
 import argparse
 import sys
 from pathlib import Path
 
-import torch
-from transformers import (
-    AutoTokenizer,
-    Trainer,
-    TrainingArguments,
-)
+from transformers import AutoTokenizer, TrainingArguments
 
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.utils.config import merge_configs, ExperimentConfig
+from src.utils.config import merge_bottleneck_configs, BottleneckExperimentConfig
 from src.backbones.simcse_repr import SimCSEReprEncoder
-from src.models.detail_encoder import DetailEncoder
-from src.models.decoder import LatentConditionedDecoder
-from src.models.rae_text import RAEText
+from src.models.bottleneck_encoder import BottleneckEncoder
+from src.models.latent_augmentation import LatentAugmentation
+from src.models.decoder import AutoRegressiveDecoder
+from src.models.bottleneck_ae import BottleneckAE
 from src.data.datasets import load_text_dataset
-from src.data.collators import RAECollator
-
-
-# ---------------------------------------------------------------------------
-# Custom Trainer (to handle two-param-group optimiser)
-# ---------------------------------------------------------------------------
-
-class RAETrainer(Trainer):
-    """Thin Trainer subclass to set up per-parameter-group learning rates."""
-
-    def create_optimizer(self):
-        if self.optimizer is not None:
-            return self.optimizer
-
-        model: RAEText = self.model
-        repr_lr = getattr(self, "_repr_lr", 1e-5)
-        base_lr = self.args.learning_rate
-
-        # Separate repr encoder params (if any are trainable) from the rest
-        repr_params = []
-        other_params = []
-        for name, param in model.named_parameters():
-            if not param.requires_grad:
-                continue
-            if name.startswith("repr_encoder."):
-                repr_params.append(param)
-            else:
-                other_params.append(param)
-
-        param_groups = [
-            {"params": other_params, "lr": base_lr},
-        ]
-        if repr_params:
-            param_groups.append({"params": repr_params, "lr": repr_lr})
-
-        self.optimizer = torch.optim.AdamW(
-            param_groups,
-            weight_decay=self.args.weight_decay,
-        )
-        return self.optimizer
+from src.data.collators import ARDecoderCollator
+from src.eval.reconstruction_metrics import compute_metrics
+from src.trainers import BottleneckTrainer, preprocess_logits_for_metrics
 
 
 # ---------------------------------------------------------------------------
 # Build model from config
 # ---------------------------------------------------------------------------
 
-def build_model(cfg: ExperimentConfig, vocab_size: int, pad_token_id: int) -> RAEText:
+def build_rae_model(
+    cfg: BottleneckExperimentConfig,
+    vocab_size: int,
+    pad_token_id: int,
+) -> BottleneckAE:
     mc = cfg.model
 
-    # Backbone
+    # Representation backbone (frozen, semantic loss target only)
     repr_encoder = SimCSEReprEncoder(model_name=mc.backbone_name)
 
-    # Detail encoder
-    detail_enc = DetailEncoder(
-        input_dim=repr_encoder.tok_dim,
-        d_det=mc.d_det,
-        n_tokens=mc.n_detail_tokens,
-        n_layers=mc.detail_encoder_layers,
-        n_heads=mc.detail_encoder_heads,
-        dropout=mc.decoder_dropout,
+    # Bottleneck encoder (standalone transformer)
+    encoder = BottleneckEncoder(
+        vocab_size=vocab_size,
+        d_model=mc.encoder_dim,
+        d_latent=mc.d_latent,
+        n_latent_tokens=mc.n_latent_tokens,
+        n_layers=mc.encoder_layers,
+        n_heads=mc.encoder_heads,
+        d_ff=mc.encoder_ff_dim,
+        max_length=mc.max_encoder_length,
+        dropout=mc.encoder_dropout,
+        pad_token_id=pad_token_id,
     )
 
     # Decoder
-    decoder = LatentConditionedDecoder(
+    decoder = AutoRegressiveDecoder(
         vocab_size=vocab_size,
         d_model=mc.decoder_dim,
         n_layers=mc.decoder_layers,
@@ -97,12 +62,18 @@ def build_model(cfg: ExperimentConfig, vocab_size: int, pad_token_id: int) -> RA
         pad_token_id=pad_token_id,
     )
 
+    # Latent augmentation
+    latent_aug = LatentAugmentation(
+        noise_std=mc.noise_std,
+        feature_dropout_p=mc.feature_dropout_p,
+    )
+
     # Full model
-    model = RAEText(
-        repr_encoder=repr_encoder,
-        detail_encoder=detail_enc,
+    model = BottleneckAE(
+        encoder=encoder,
         decoder=decoder,
-        d_sem=mc.d_sem,
+        repr_encoder=repr_encoder,
+        latent_aug=latent_aug,
         lambda_sem=mc.lambda_sem,
         freeze_repr=mc.freeze_repr,
     )
@@ -114,7 +85,7 @@ def build_model(cfg: ExperimentConfig, vocab_size: int, pad_token_id: int) -> RA
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Train Stage-1 RAE autoencoder")
+    parser = argparse.ArgumentParser(description="Train Bottleneck autoencoder")
     parser.add_argument(
         "--configs",
         nargs="+",
@@ -124,7 +95,7 @@ def main():
     args = parser.parse_args()
 
     # Load config
-    cfg = merge_configs(*args.configs)
+    cfg = merge_bottleneck_configs(*args.configs)
     print(f"=== Config ===\n{cfg}\n")
 
     # Tokenizer
@@ -133,18 +104,14 @@ def main():
     pad_token_id = tokenizer.pad_token_id or 0
 
     # Model
-    model = build_model(cfg, vocab_size, pad_token_id)
+    model = build_rae_model(cfg, vocab_size, pad_token_id)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_trainable:,} trainable / {n_total:,} total")
 
     # Data
     datasets = load_text_dataset(cfg.data)
-    collator = RAECollator(
-        tokenizer=tokenizer,
-        max_length=cfg.data.max_length,
-        text_column=cfg.data.text_column,
-    )
+    collator = ARDecoderCollator.from_data_config(tokenizer, cfg.data)
 
     # Training arguments
     tc = cfg.train
@@ -156,6 +123,7 @@ def main():
         gradient_accumulation_steps=tc.gradient_accumulation_steps,
         learning_rate=tc.lr,
         weight_decay=tc.weight_decay,
+        lr_scheduler_type="constant_with_warmup",
         warmup_steps=tc.warmup_steps,
         logging_steps=tc.logging_steps,
         eval_strategy="steps",
@@ -172,14 +140,15 @@ def main():
     )
 
     # Trainer
-    trainer = RAETrainer(
+    trainer = BottleneckTrainer(
         model=model,
         args=training_args,
         train_dataset=datasets["train"],
         eval_dataset=datasets["validation"],
         data_collator=collator,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
+        compute_metrics=compute_metrics,
     )
-    trainer._repr_lr = tc.repr_lr
 
     # Train
     trainer.train()

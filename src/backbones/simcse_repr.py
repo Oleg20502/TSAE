@@ -1,7 +1,5 @@
 """SimCSE backbone wrapper for sentence + token embeddings."""
 
-from __future__ import annotations
-
 from typing import Tuple
 
 import torch
@@ -19,7 +17,7 @@ class SimCSEReprEncoder(BaseTextReprEncoder):
 
     def __init__(self, model_name: str = "princeton-nlp/sup-simcse-bert-base-uncased"):
         super().__init__()
-        self.model = AutoModel.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name, use_safetensors=True)
         hidden_size: int = self.model.config.hidden_size
         self._sent_dim = hidden_size
         self._tok_dim = hidden_size

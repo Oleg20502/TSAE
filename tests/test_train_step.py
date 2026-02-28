@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.backbones.base_repr import BaseTextReprEncoder
 from src.models.detail_encoder import DetailEncoder
-from src.models.decoder import LatentConditionedDecoder
+from src.models.decoder import AutoRegressiveDecoder
 from src.models.rae_text import RAEText
 
 
@@ -55,12 +55,12 @@ D_DEC = 32
 N_HEADS = 4
 
 
-def _build_model():
+def _build_rae_model():
     encoder = DummyReprEncoder(hidden_size=H)
     detail_enc = DetailEncoder(
         input_dim=H, d_det=D_DET, n_tokens=M, n_layers=2, n_heads=N_HEADS,
     )
-    decoder = LatentConditionedDecoder(
+    decoder = AutoRegressiveDecoder(
         vocab_size=VOCAB, d_model=D_DEC, n_layers=2, n_heads=N_HEADS,
         d_ff=D_DEC * 2, max_length=T, pad_token_id=0,
     )
@@ -96,13 +96,13 @@ def _make_batch():
 
 class TestTrainStep:
     def test_loss_is_finite(self):
-        model = _build_model()
+        model = _build_rae_model()
         batch = _make_batch()
         out = model(**batch)
         assert torch.isfinite(out["loss"]), f"Loss is not finite: {out['loss']}"
 
     def test_backward_runs(self):
-        model = _build_model()
+        model = _build_rae_model()
         batch = _make_batch()
         out = model(**batch)
         out["loss"].backward()
@@ -112,7 +112,7 @@ class TestTrainStep:
 
     def test_loss_decreases(self):
         """Run a few optimiser steps and verify the loss trend is downward."""
-        model = _build_model()
+        model = _build_rae_model()
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         batch = _make_batch()
 
@@ -131,7 +131,7 @@ class TestTrainStep:
 
     def test_frozen_repr_no_grad(self):
         """When freeze_repr=True the backbone should have no gradients."""
-        model = _build_model()
+        model = _build_rae_model()
         # Rebuild with freeze
         model_frozen = RAEText(
             repr_encoder=model.repr_encoder,

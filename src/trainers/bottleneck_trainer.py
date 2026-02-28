@@ -1,0 +1,105 @@
+"""Bottleneck AE Trainer: logs l_recon and l_sem for train and validation."""
+
+import math
+
+import torch
+from transformers import Trainer
+
+
+# For fast handling of logits using gpu
+def preprocess_logits_for_metrics(logits, labels):
+    pred_ids = torch.argmax(logits[0], dim=-1)
+    return pred_ids
+
+
+class BottleneckTrainer(Trainer):
+    """Trainer that logs l_recon and l_sem from the model output.
+
+    Logs train_l_recon / train_l_sem at logging steps. During evaluation,
+    accumulates l_recon and l_sem in the same pass as eval_loss and adds
+    eval_l_recon / eval_l_sem to the metrics (no second eval pass).
+    """
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        outputs = model(**inputs)
+        loss = outputs["loss"]
+
+        if model.training:
+            # Cache component losses for the *next* optimizer step.
+            # During gradient accumulation, compute_loss is called multiple times
+            # while global_step is still the previous optimizer step.
+            step_key = int(self.state.global_step) + 1
+            if not hasattr(self, "_train_component_loss_cache"):
+                self._train_component_loss_cache = {}
+            slot = self._train_component_loss_cache.setdefault(
+                step_key,
+                {
+                    "l_recon_sum": 0.0,
+                    "l_recon_n": 0,
+                    "l_sem_sum": 0.0,
+                    "l_sem_n": 0,
+                },
+            )
+            if "l_recon" in outputs:
+                slot["l_recon_sum"] += outputs["l_recon"].item()
+                slot["l_recon_n"] += 1
+            if "l_sem" in outputs:
+                slot["l_sem_sum"] += outputs["l_sem"].item()
+                slot["l_sem_n"] += 1
+        else:
+            # Eval: accumulate for mean over validation set
+            if not hasattr(self, "_eval_recon_sum"):
+                self._eval_recon_sum = 0.0
+                self._eval_sem_sum = 0.0
+                self._eval_n = 0
+            if "l_recon" in outputs:
+                self._eval_recon_sum += outputs["l_recon"].item()
+            if "l_sem" in outputs:
+                self._eval_sem_sum += outputs["l_sem"].item()
+            self._eval_n += 1
+
+        if return_outputs:
+            return (loss, outputs)
+        return loss
+
+    def log(self, logs, start_time=None):
+        # Merge component losses into the main training log line so everything
+        # (loss, grad_norm, lr, train_l_*) is emitted together.
+        merged_logs = dict(logs)
+        if "loss" in merged_logs and not any(k.startswith("eval_") for k in merged_logs):
+            # Trainer accumulates loss as sum over micro-batches; report mean per step.
+            merged_logs["loss"] = merged_logs["loss"] / self.args.gradient_accumulation_steps
+            cache = getattr(self, "_train_component_loss_cache", None)
+            if cache is not None:
+                step_key = int(self.state.global_step)
+                slot = cache.pop(step_key, None)
+                if slot is not None:
+                    if slot["l_recon_n"] > 0:
+                        merged_logs["train_l_recon"] = slot["l_recon_sum"] / slot["l_recon_n"]
+                    if slot["l_sem_n"] > 0:
+                        merged_logs["train_l_sem"] = slot["l_sem_sum"] / slot["l_sem_n"]
+        return super().log(merged_logs, start_time=start_time)
+
+    def evaluation_loop(self, dataloader, description, prediction_loss_only=None, ignore_keys=None, metric_key_prefix: str = "eval"):
+        # Reset accumulators before the eval pass
+        self._eval_recon_sum = 0.0
+        self._eval_sem_sum = 0.0
+        self._eval_n = 0
+
+        output = super().evaluation_loop(
+            dataloader=dataloader,
+            description=description,
+            prediction_loss_only=prediction_loss_only,
+            ignore_keys=ignore_keys,
+            metric_key_prefix=metric_key_prefix,
+        )
+
+        # Add component losses and perplexity so they are included when evaluate() logs
+        if self._eval_n > 0:
+            output.metrics[f"{metric_key_prefix}_l_recon"] = self._eval_recon_sum / self._eval_n
+            output.metrics[f"{metric_key_prefix}_l_sem"] = self._eval_sem_sum / self._eval_n
+        loss_key = f"{metric_key_prefix}_loss"
+        if loss_key in output.metrics:
+            output.metrics[f"{metric_key_prefix}_perplexity"] = math.exp(output.metrics[loss_key])
+
+        return output

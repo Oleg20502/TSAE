@@ -1,0 +1,39 @@
+# Conda environment for Pascal GPUs (e.g. GTX 1080 Ti).
+# Creates PyTorch + CUDA 11.8 and cuda-toolkit so CUDA_HOME is set for DeepSpeed.
+#
+# Create:  conda env create -f envs/conda-pascal.yaml
+# Activate: conda activate tsae-1080
+# Then:    cp pyproject.pascal.toml pyproject.toml && pip install -e .
+
+name: tsae-1080
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pytorch
+  - pytorch-cuda=11.8
+  - torchvision
+  - torchaudio
+  - cuda-toolkit=11.8
+  - ninja
+  - cmake
+  - make
+  - git
+  - tensorboard
+  - pkg-config
+  - matplotlib
+  - pip
+  - pip:
+      - transformers>=4.35,<4.46
+      - accelerate
+      - peft
+      - deepspeed>=0.12,<0.15
+      - datasets
+      - evaluate
+      - sentence-transformers>=2.3
+      - sentencepiece
+      - protobuf<5
+      - pyyaml>=6.0
+      - dacite>=1.8
