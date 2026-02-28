@@ -199,7 +199,8 @@ class TestBottleneckAEShapes:
     def test_encode_latent(self, bottleneck_model):
         ids = torch.randint(1, VOCAB, (B, T))
         mask = torch.ones(B, T, dtype=torch.long)
-        z, sent_emb = bottleneck_model.encode_latent(ids, mask)
+        z = bottleneck_model.encode(ids, mask)
+        sent_emb = bottleneck_model.embed(ids, mask)
         assert z.shape == (B, N_LATENT, D_LATENT)
         assert sent_emb.shape == (B, H)
 
@@ -331,6 +332,6 @@ class TestBottleneckTrainStep:
         model.eval()
         batch = _make_batch()
 
-        z1, _ = model.encode_latent(batch["input_ids"], batch["attention_mask"])
+        z1 = model.encode(batch["input_ids"], batch["attention_mask"])
         z_aug = model.latent_aug(z1)
         assert torch.equal(z1, z_aug), "Augmentation should be identity in eval mode"

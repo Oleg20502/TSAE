@@ -26,7 +26,7 @@ from src.trainers import BottleneckTrainer, preprocess_logits_for_metrics
 # Build model from config
 # ---------------------------------------------------------------------------
 
-def build_model(
+def build_rae_model(
     cfg: BottleneckExperimentConfig,
     vocab_size: int,
     pad_token_id: int,
@@ -104,7 +104,7 @@ def main():
     pad_token_id = tokenizer.pad_token_id or 0
 
     # Model
-    model = build_model(cfg, vocab_size, pad_token_id)
+    model = build_rae_model(cfg, vocab_size, pad_token_id)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_trainable:,} trainable / {n_total:,} total")

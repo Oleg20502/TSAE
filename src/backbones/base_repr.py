@@ -1,7 +1,5 @@
 """Abstract base class for text representation encoders."""
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from typing import Tuple
 

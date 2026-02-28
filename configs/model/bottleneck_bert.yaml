@@ -5,7 +5,7 @@ model:
 
   # Encoder
   d_latent: 768
-  n_latent_tokens: 4
+  n_latent_tokens: 2
   encoder_dim: 768
   encoder_layers: 6
   encoder_heads: 12
@@ -22,8 +22,8 @@ model:
   max_decoder_length: 16
 
   # Latent augmentation
-  noise_std: 0.0
-  feature_dropout_p: 0.1
+  noise_std: 0.2
+  feature_dropout_p: 0.0
 
   # Loss
   lambda_sem: 0.2

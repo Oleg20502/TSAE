@@ -1,14 +1,14 @@
 train:
-  output_dir: outputs/bottleneck_bert
+  output_dir: outputs/vavae_bert_nl_2
   lr: 1.0e-4
   weight_decay: 0.01
   epochs: 100
   warmup_steps: 1000
-  batch_size: 64
+  batch_size: 32
   gradient_accumulation_steps: 4
-  logging_steps: 500
-  eval_steps: 5000
-  save_steps: 5000
+  logging_steps: 100
+  eval_steps: 1000
+  save_steps: 1000
   save_total_limit: 3
   fp16: false
   bf16: false

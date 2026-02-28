@@ -7,6 +7,7 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
+from src.utils.config import ExperimentConfig
 from src.backbones.base_repr import BaseTextReprEncoder
 from src.models.detail_encoder import DetailEncoder
 from src.models.decoder import AutoRegressiveDecoder
@@ -186,3 +187,43 @@ class RAEText(nn.Module):
                 break
 
         return generated
+
+
+def build_rae_model(cfg: ExperimentConfig, vocab_size: int, pad_token_id: int) -> RAEText:
+    mc = cfg.model
+
+    # Backbone
+    repr_encoder = BaseTextReprEncoder(model_name=mc.backbone_name)
+
+    # Detail encoder
+    detail_enc = DetailEncoder(
+        input_dim=repr_encoder.tok_dim,
+        d_det=mc.d_det,
+        n_tokens=mc.n_detail_tokens,
+        n_layers=mc.detail_encoder_layers,
+        n_heads=mc.detail_encoder_heads,
+        dropout=mc.decoder_dropout,
+    )
+
+    # Decoder
+    decoder = AutoRegressiveDecoder(
+        vocab_size=vocab_size,
+        d_model=mc.decoder_dim,
+        n_layers=mc.decoder_layers,
+        n_heads=mc.decoder_heads,
+        d_ff=mc.decoder_ff_dim,
+        max_length=mc.max_decoder_length,
+        dropout=mc.decoder_dropout,
+        pad_token_id=pad_token_id,
+    )
+
+    # Full model
+    model = RAEText(
+        repr_encoder=repr_encoder,
+        detail_encoder=detail_enc,
+        decoder=decoder,
+        d_sem=mc.d_sem,
+        lambda_sem=mc.lambda_sem,
+        freeze_repr=mc.freeze_repr,
+    )
+    return model

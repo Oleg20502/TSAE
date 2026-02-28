@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""Stage-1 training script: train the RAE-text autoencoder."""
-
-from __future__ import annotations
+"""Train the RAE-text autoencoder."""
 
 import argparse
 import sys
@@ -12,63 +10,11 @@ from transformers import AutoTokenizer, TrainingArguments
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.utils.config import merge_configs, ExperimentConfig
-from src.backbones.simcse_repr import SimCSEReprEncoder
-from src.models.detail_encoder import DetailEncoder
-from src.models.decoder import AutoRegressiveDecoder
-from src.models.rae_text import RAEText
+from src.utils.config import merge_configs
 from src.data.datasets import load_text_dataset
 from src.data.collators import ARDecoderCollator
 from src.trainers import RAETrainer
-
-
-# ---------------------------------------------------------------------------
-# Build model from config
-# ---------------------------------------------------------------------------
-
-def build_model(cfg: ExperimentConfig, vocab_size: int, pad_token_id: int) -> RAEText:
-    mc = cfg.model
-
-    # Backbone
-    repr_encoder = SimCSEReprEncoder(model_name=mc.backbone_name)
-
-    # Detail encoder
-    detail_enc = DetailEncoder(
-        input_dim=repr_encoder.tok_dim,
-        d_det=mc.d_det,
-        n_tokens=mc.n_detail_tokens,
-        n_layers=mc.detail_encoder_layers,
-        n_heads=mc.detail_encoder_heads,
-        dropout=mc.decoder_dropout,
-    )
-
-    # Decoder
-    decoder = AutoRegressiveDecoder(
-        vocab_size=vocab_size,
-        d_model=mc.decoder_dim,
-        n_layers=mc.decoder_layers,
-        n_heads=mc.decoder_heads,
-        d_ff=mc.decoder_ff_dim,
-        max_length=mc.max_decoder_length,
-        dropout=mc.decoder_dropout,
-        pad_token_id=pad_token_id,
-    )
-
-    # Full model
-    model = RAEText(
-        repr_encoder=repr_encoder,
-        detail_encoder=detail_enc,
-        decoder=decoder,
-        d_sem=mc.d_sem,
-        lambda_sem=mc.lambda_sem,
-        freeze_repr=mc.freeze_repr,
-    )
-    return model
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+from src.models.rae_text import build_rae_model
 
 def main():
     parser = argparse.ArgumentParser(description="Train Stage-1 RAE autoencoder")
@@ -90,7 +36,7 @@ def main():
     pad_token_id = tokenizer.pad_token_id or 0
 
     # Model
-    model = build_model(cfg, vocab_size, pad_token_id)
+    model = build_rae_model(cfg, vocab_size, pad_token_id)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_trainable:,} trainable / {n_total:,} total")

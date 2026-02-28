@@ -23,7 +23,6 @@ dependencies = [
     "sentence-transformers>=2.3",
     "pyyaml>=6.0",
     "dacite>=1.8",
-    "editdistance>=0.6",
     "evaluate>=0.4",
 ]
 

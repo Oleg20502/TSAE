@@ -1,7 +1,5 @@
 """SimCSE backbone wrapper for sentence + token embeddings."""
 
-from __future__ import annotations
-
 from typing import Tuple
 
 import torch

@@ -70,26 +70,37 @@ class BottleneckAE(nn.Module):
     # Encode
     # ------------------------------------------------------------------
 
-    def encode_latent(
+    def embed(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Produce the bottleneck latent and the SimCSE semantic target.
+    ) -> torch.Tensor:
+        """Produce the representaion embedder semantic target.
 
         Returns:
-            z:        (B, n_latent_tokens, d_latent) encoder latent sequence.
-            sent_emb: (B, D_s) SimCSE sentence embedding (detached target).
+            sent_emb: (B, D_s) sentence embedding (detached target).
         """
-        # Encoder produces latent from raw token ids
-        z = self.encoder(input_ids, attention_mask)  # (B, n_latent_tokens, d_latent)
-
         sent_emb = None
         if self.repr_encoder:
             with torch.no_grad():
                 sent_emb, _ = self.repr_encoder.encode(input_ids, attention_mask)
 
-        return z, sent_emb
+        return sent_emb
+
+    def encode(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Produce the bottleneck latent and the representaion embedder semantic target.
+
+        Returns:
+            z:        (B, n_latent_tokens, d_latent) encoder latent sequence.
+        """
+        # Encoder produces latent from raw token ids
+        z = self.encoder(input_ids, attention_mask)  # (B, n_latent_tokens, d_latent)
+
+        return z
 
     # ------------------------------------------------------------------
     # Forward (HF Trainer compatible)
@@ -109,7 +120,8 @@ class BottleneckAE(nn.Module):
         Returns a dict with ``"loss"`` as the first key (HF Trainer requirement).
         """
         # Encode
-        z, sent_emb = self.encode_latent(input_ids, attention_mask)
+        z = self.encode(input_ids, attention_mask)
+        sent_emb = self.embed(input_ids, attention_mask)
 
         # Latent augmentation (only during training)
         z_aug = self.latent_aug(z)
@@ -178,7 +190,7 @@ class BottleneckAE(nn.Module):
         Returns:
             generated: (B, T') generated token ids.
         """
-        z, _ = self.encode_latent(input_ids, attention_mask)
+        z = self.encode(input_ids, attention_mask)
         z_dec = self.latent_to_dec(z)  # (B, 1, d_dec)
 
         B = z.size(0)
