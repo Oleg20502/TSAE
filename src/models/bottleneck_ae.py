@@ -1,6 +1,6 @@
 """Bottleneck autoencoder: latent token sequence with independent encoder and decoder transformers."""
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn

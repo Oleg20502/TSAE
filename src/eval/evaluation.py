@@ -4,7 +4,6 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from src.models.rae_text import RAEText
 from src.eval.reconstruction_metrics import (
     token_accuracy,
     perplexity_from_loss,
@@ -14,7 +13,7 @@ from src.eval.semantic_metrics import cosine_sim_batch
 
 @torch.no_grad()
 def evaluate(
-    model: RAEText,
+    model,
     dataloader: DataLoader,
     tokenizer: AutoTokenizer,
     device: torch.device,
