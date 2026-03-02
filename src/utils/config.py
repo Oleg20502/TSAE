@@ -135,23 +135,22 @@ class BottleneckModelConfig:
     backbone_name: str = "princeton-nlp/sup-simcse-bert-base-uncased"
     freeze_repr: bool = True
 
-    # Encoder
     d_latent: int = 256
+    d_model: int = 256
+    max_length: int = 128
     n_latent_tokens: int = 1
-    encoder_dim: int = 256
+
+    # Encoder
     encoder_layers: int = 4
     encoder_heads: int = 4
     encoder_ff_dim: int = 512
     encoder_dropout: float = 0.1
-    max_encoder_length: int = 128
 
     # Decoder
     decoder_layers: int = 4
     decoder_heads: int = 4
-    decoder_dim: int = 256
     decoder_ff_dim: int = 512
     decoder_dropout: float = 0.1
-    max_decoder_length: int = 128
 
     # Latent augmentation
     noise_std: float = 0.0

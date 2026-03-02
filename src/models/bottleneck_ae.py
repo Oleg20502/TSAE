@@ -1,14 +1,17 @@
 """Bottleneck autoencoder: latent token sequence with independent encoder and decoder transformers."""
 
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 import torch
 import torch.nn as nn
+from transformers import AutoTokenizer
 
 from src.backbones.base_repr import BaseTextReprEncoder
+from src.backbones.simcse_repr import SimCSEReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
 from src.models.decoder import AutoRegressiveDecoder
+from src.utils.config import BottleneckExperimentConfig, merge_bottleneck_configs
 from src.losses.reconstruction import reconstruction_loss
 from src.losses.semantic import semantic_consistency_loss
 
@@ -212,3 +215,82 @@ class BottleneckAE(nn.Module):
                 break
 
         return generated
+
+
+def build_bottleneck_model(
+    cfg: BottleneckExperimentConfig,
+    vocab_size: int,
+    pad_token_id: int,
+) -> BottleneckAE:
+    mc = cfg.model
+
+    repr_encoder = SimCSEReprEncoder(model_name=mc.backbone_name)
+
+    encoder = BottleneckEncoder(
+        vocab_size=vocab_size,
+        d_model=mc.d_model,
+        d_latent=mc.d_latent,
+        n_latent_tokens=mc.n_latent_tokens,
+        n_layers=mc.encoder_layers,
+        n_heads=mc.encoder_heads,
+        d_ff=mc.encoder_ff_dim,
+        max_length=mc.max_length,
+        dropout=mc.encoder_dropout,
+        pad_token_id=pad_token_id,
+    )
+
+    decoder = AutoRegressiveDecoder(
+        vocab_size=vocab_size,
+        d_model=mc.d_model,
+        n_layers=mc.decoder_layers,
+        n_heads=mc.decoder_heads,
+        d_ff=mc.decoder_ff_dim,
+        max_length=mc.max_length,
+        dropout=mc.decoder_dropout,
+        pad_token_id=pad_token_id,
+    )
+
+    latent_aug = LatentAugmentation(
+        noise_std=mc.noise_std,
+        feature_dropout_p=mc.feature_dropout_p,
+    )
+
+    model = BottleneckAE(
+        encoder=encoder,
+        decoder=decoder,
+        repr_encoder=repr_encoder,
+        latent_aug=latent_aug,
+        lambda_sem=mc.lambda_sem,
+        freeze_repr=mc.freeze_repr,
+    )
+    return model
+
+
+def load_bottleneck_model(
+    config_paths: List[str],
+    checkpoint_path: str,
+    device: str,
+):
+    """Rebuild BottleneckAE from YAML config(s) and load HF Trainer checkpoint."""
+    cfg = merge_bottleneck_configs(*config_paths)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
+    vocab_size = tokenizer.vocab_size
+    pad_token_id = tokenizer.pad_token_id or 0
+
+    model = build_bottleneck_model(cfg, vocab_size, pad_token_id)
+
+    if checkpoint_path.endswith(".safetensors"):
+        from safetensors.torch import load_file
+        state = load_file(checkpoint_path, device=device)
+    else:
+        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+
+    missing, unexpected = model.load_state_dict(state, strict=True)
+    if missing or unexpected:
+        print("Warning: state_dict load issues.")
+        if missing:
+            print("  Missing keys:", missing)
+        if unexpected:
+            print("  Unexpected keys:", unexpected)
+
+    return model, tokenizer, cfg

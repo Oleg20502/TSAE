@@ -16,7 +16,6 @@ from src.utils.config import merge_configs
 from src.data.datasets import load_text_dataset
 from src.data.collators import ARDecoderCollator
 
-from src.models.rae_text import build_rae_model
 from src.eval.evaluation import evaluate
 
 

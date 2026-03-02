@@ -39,25 +39,24 @@ def build_rae_model(
     # Bottleneck encoder (standalone transformer)
     encoder = BottleneckEncoder(
         vocab_size=vocab_size,
-        d_model=mc.encoder_dim,
+        d_model=mc.d_model,
         d_latent=mc.d_latent,
         n_latent_tokens=mc.n_latent_tokens,
         n_layers=mc.encoder_layers,
         n_heads=mc.encoder_heads,
         d_ff=mc.encoder_ff_dim,
-        max_length=mc.max_encoder_length,
+        max_length=mc.max_length,
         dropout=mc.encoder_dropout,
         pad_token_id=pad_token_id,
     )
 
-    # Decoder
     decoder = AutoRegressiveDecoder(
         vocab_size=vocab_size,
-        d_model=mc.decoder_dim,
+        d_model=mc.d_model,
         n_layers=mc.decoder_layers,
         n_heads=mc.decoder_heads,
         d_ff=mc.decoder_ff_dim,
-        max_length=mc.max_decoder_length,
+        max_length=mc.max_length,
         dropout=mc.decoder_dropout,
         pad_token_id=pad_token_id,
     )
