@@ -1,5 +1,5 @@
 train:
-  output_dir: outputs/vavae_bert_nl_2
+  output_dir: outputs/vavae_mpnet_nl_2
   lr: 1.0e-4
   weight_decay: 0.01
   epochs: 100
@@ -9,7 +9,7 @@ train:
   logging_steps: 100
   eval_steps: 1000
   save_steps: 1000
-  save_total_limit: 3
+  save_total_limit: 2
   fp16: false
   bf16: false
   dataloader_num_workers: 16

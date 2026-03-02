@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 from transformers import AutoTokenizer
 
-from src.backbones.base_repr import BaseTextReprEncoder
-from src.backbones.simcse_repr import SimCSEReprEncoder
+from src.backbones.repr_embedder import BaseTextReprEncoder
+from src.backbones.repr_embedder import STReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
 from src.models.decoder import AutoRegressiveDecoder
@@ -51,20 +51,11 @@ class BottleneckAE(nn.Module):
         self.latent_aug = latent_aug or LatentAugmentation()  # no-op defaults
         self.lambda_sem = lambda_sem
 
-        d_latent = encoder.d_latent
-        d_dec = decoder.d_model
-
-        # Project latent to decoder dim if they differ
-        if d_latent != d_dec:
-            self.latent_to_dec = nn.Linear(d_latent, d_dec)
-        else:
-            self.latent_to_dec = nn.Identity()
-
         # Semantic projection: latent -> repr_encoder sentence dim
         if self.repr_encoder:
-            self.sem_proj = nn.Linear(d_latent, repr_encoder.sent_dim)
+            self.sem_proj = nn.Linear(encoder.d_latent, repr_encoder.sent_dim)
 
-        # Freeze the representation backbone (used only for the semantic target)
+        # Freeze the representation backbone
         if freeze_repr and self.repr_encoder:
             for p in self.repr_encoder.parameters():
                 p.requires_grad = False
@@ -129,12 +120,9 @@ class BottleneckAE(nn.Module):
         # Latent augmentation (only during training)
         z_aug = self.latent_aug(z)
 
-        # Project latent to decoder dim
-        z_dec = self.latent_to_dec(z_aug)  # (B, n_latent_tokens, d_dec)
-
         # Decode
         logits, _dec_hidden = self.decoder(
-            latent_tokens=z_dec,
+            latent_tokens=z_aug,
             decoder_input_ids=decoder_input_ids,
             decoder_attention_mask=decoder_attention_mask,
         )
@@ -194,7 +182,6 @@ class BottleneckAE(nn.Module):
             generated: (B, T') generated token ids.
         """
         z = self.encode(input_ids, attention_mask)
-        z_dec = self.latent_to_dec(z)  # (B, 1, d_dec)
 
         B = z.size(0)
         device = z.device
@@ -204,7 +191,7 @@ class BottleneckAE(nn.Module):
 
         for _ in range(max_length - 1):
             logits, _ = self.decoder(
-                latent_tokens=z_dec,
+                latent_tokens=z,
                 decoder_input_ids=generated,
             )
             next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)  # (B, 1)
@@ -224,7 +211,7 @@ def build_bottleneck_model(
 ) -> BottleneckAE:
     mc = cfg.model
 
-    repr_encoder = SimCSEReprEncoder(model_name=mc.backbone_name)
+    repr_encoder = STReprEncoder(model_name=mc.backbone_name)
 
     encoder = BottleneckEncoder(
         vocab_size=vocab_size,

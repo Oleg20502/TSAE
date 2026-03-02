@@ -11,9 +11,8 @@ from transformers import AutoTokenizer, TrainingArguments
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.utils.config import merge_bottleneck_configs, BottleneckExperimentConfig
-from src.backbones.simcse_repr import SimCSEReprEncoder
+from src.backbones.repr_embedder import SimCSEReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
-from src.models.latent_augmentation import LatentAugmentation
 from src.models.decoder import AutoRegressiveDecoder
 from src.models.bottleneck_ae import BottleneckAE
 from src.data.datasets import load_text_dataset

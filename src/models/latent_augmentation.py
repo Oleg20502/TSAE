@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,6 +34,7 @@ class LatentAugmentation(nn.Module):
         super().__init__()
         self.noise_std = noise_std
         self.feature_dropout_p = feature_dropout_p
+        self.signal_norm = math.sqrt(1 - self.noise_std**2)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """
@@ -46,7 +49,7 @@ class LatentAugmentation(nn.Module):
 
         # 1) Gaussian noise
         if self.noise_std > 0.0:
-            z = z + self.noise_std * torch.randn_like(z)
+            z = self.signal_norm * z + self.noise_std * torch.randn_like(z)
 
         # 2) Feature dropout (drop individual dimensions)
         if self.feature_dropout_p > 0.0:

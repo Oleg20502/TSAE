@@ -1,11 +1,76 @@
-"""SimCSE backbone wrapper for sentence + token embeddings."""
+"""Classes for text representation encoders."""
 
+from abc import ABC, abstractmethod
 from typing import Tuple
 
 import torch
-from transformers import AutoModel, AutoTokenizer
+import torch.nn as nn
 
-from src.backbones.base_repr import BaseTextReprEncoder
+from sentence_transformers import SentenceTransformer
+from transformers import AutoModel
+
+
+
+class BaseTextReprEncoder(ABC, nn.Module):
+    """Abstract base class for text representation encoders.
+    Interface that every representation backbone must implement.
+
+    Subclasses provide a pretrained (or trainable) encoder that returns
+    both sentence-level and token-level representations.
+    """
+
+    @abstractmethod
+    def encode(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        **model_kwargs,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Encode a batch of tokenized text.
+
+        Args:
+            input_ids:      (B, T) token ids.
+            attention_mask:  (B, T) 1/0 mask.
+            model_kwargs:     other kwargs
+
+        Returns:
+            sent_emb: (B, D_s) sentence-level semantic embedding.
+            tok_emb:  (B, T, D_t) token-level hidden states.
+        """
+        ...
+
+
+
+class STReprEncoder(BaseTextReprEncoder):
+    def __init__(
+        self,
+        model_name: str,
+        force_normalize: bool = False,
+    ):
+        super().__init__()
+        self.model = SentenceTransformer(model_name)
+        self._sent_dim = self.model.get_sentence_embedding_dimension()
+
+    def encode(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        **model_kwargs,
+    ):
+        features = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
+        out = self.model(features, **model_kwargs)
+        sent_emb = out["sentence_embedding"]
+
+        return sent_emb, out
+    
+    @property
+    def sent_dim(self) -> int:
+        return self._sent_dim
+
 
 
 class SimCSEReprEncoder(BaseTextReprEncoder):
@@ -56,14 +121,6 @@ class SimCSEReprEncoder(BaseTextReprEncoder):
         """Alias so the module is callable in the standard nn.Module way."""
         return self.encode(input_ids, attention_mask)
 
-    # ------------------------------------------------------------------
-    # Convenience
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_tokenizer(model_name: str = "princeton-nlp/sup-simcse-bert-base-uncased"):
-        return AutoTokenizer.from_pretrained(model_name)
-
 
 class AllReprEncoder(BaseTextReprEncoder):
     """
@@ -110,11 +167,3 @@ class AllReprEncoder(BaseTextReprEncoder):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Alias so the module is callable in the standard nn.Module way."""
         return self.encode(input_ids, attention_mask)
-
-    # ------------------------------------------------------------------
-    # Convenience
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_tokenizer(model_name: str = "sentence-transformers/all-mpnet-base-v2"):
-        return AutoTokenizer.from_pretrained(model_name)
