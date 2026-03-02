@@ -68,6 +68,7 @@ def main():
         save_strategy="steps",
         save_steps=tc.save_steps,
         save_total_limit=tc.save_total_limit,
+        max_grad_norm=tc.max_grad_norm,
         fp16=tc.fp16,
         bf16=tc.bf16,
         dataloader_num_workers=tc.dataloader_num_workers,

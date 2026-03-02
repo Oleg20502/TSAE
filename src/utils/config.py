@@ -94,6 +94,7 @@ class TrainConfig:
     warmup_steps: int = 500
     batch_size: int = 64
     gradient_accumulation_steps: int = 1
+    max_grad_norm: float = 1.0
 
     # Logging
     logging_steps: int = 50

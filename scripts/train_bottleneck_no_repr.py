@@ -11,7 +11,6 @@ from transformers import AutoTokenizer, TrainingArguments
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.utils.config import merge_bottleneck_configs, BottleneckExperimentConfig
-from src.backbones.repr_embedder import SimCSEReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.decoder import AutoRegressiveDecoder
 from src.models.bottleneck_ae import BottleneckAE
@@ -31,9 +30,6 @@ def build_rae_model(
     pad_token_id: int,
 ) -> BottleneckAE:
     mc = cfg.model
-
-    # # Representation backbone (frozen, semantic loss target only)
-    # repr_encoder = SimCSEReprEncoder(model_name=mc.backbone_name)
 
     # Bottleneck encoder (standalone transformer)
     encoder = BottleneckEncoder(
@@ -59,12 +55,6 @@ def build_rae_model(
         dropout=mc.decoder_dropout,
         pad_token_id=pad_token_id,
     )
-
-    # Latent augmentation
-    # latent_aug = LatentAugmentation(
-    #     noise_std=mc.noise_std,
-    #     feature_dropout_p=mc.feature_dropout_p,
-    # )
 
     # Full model
     model = BottleneckAE(
@@ -129,6 +119,7 @@ def main():
         save_strategy="steps",
         save_steps=tc.save_steps,
         save_total_limit=tc.save_total_limit,
+        max_grad_norm=tc.max_grad_norm,
         fp16=tc.fp16,
         bf16=tc.bf16,
         dataloader_num_workers=tc.dataloader_num_workers,
