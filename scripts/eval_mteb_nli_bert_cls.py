@@ -1,23 +1,12 @@
 #!/usr/bin/env python3
 """
-Evaluate sentence embedding models on MTEB STS + Probing tasks.
+Temporary file.
+Evaluate nli-bert-base via CLS pooling (not standard pooling for it).
 
-Usage examples:
-
-Bottleneck AE (latent embeddings):
-  python scripts/eval_mteb.py \
-    --model-type bottleneck \
+Usage example:
+  python scripts/eval_mteb_nli_bert_cls.py \
     --config configs/model/bottleneck_bert.yaml \
-    --checkpoint outputs/bottleneck_ae/final/model.safetensors \
-    --output-dir mteb_results/vavae/ \
-    --batch-size 32
-    
-
-Sentence-Transformers model:
-  python scripts/eval_mteb.py \
-    --model-type st \
-    --st-model sentence-transformers/all-MiniLM-L6-v2 \
-    --output-dir mteb_results/all-MiniLM-L6-v2/ \
+    --output-dir mteb_results/nli-bert-cls/ \
     --batch-size 32
 """
 
@@ -35,23 +24,23 @@ from mteb.models.model_meta import ModelMeta
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.models.bottleneck_ae import BottleneckAE, load_bottleneck_model
+from src.backbones.repr_embedder import CLSReprEncoder
+from src.utils.config import merge_bottleneck_configs
 
 
 # ---------------------------------------------------------------------
 # MTEB v2 encoder wrapper (implements AbsEncoder protocol)
 # ---------------------------------------------------------------------
 
-class BottleneckAEWrapper(AbsEncoder):
-    """Wrap BottleneckAE as an MTEB-compatible encoder.
+class CLSEncoderWrapper(AbsEncoder):
+    """Wrap Encoder an MTEB-compatible encoder.
 
-    Uses mean-pooled latent tokens as the sentence embedding.
     Inherits similarity / similarity_pairwise from AbsEncoder.
     """
 
     def __init__(
         self,
-        model: BottleneckAE,
+        model,
         tokenizer: AutoTokenizer,
         device: str = "cuda",
         max_length: int = 128,
@@ -82,17 +71,12 @@ class BottleneckAEWrapper(AbsEncoder):
             )
             enc = {k: v.to(self.device) for k, v in enc.items()}
 
-            z = self.model.encode(enc["input_ids"], enc["attention_mask"])
-            embs = z.mean(dim=1)  # (B, d_latent)
+            embs, _ = self.model.encode(enc["input_ids"], enc["attention_mask"])
 
             all_embs.append(embs.cpu().numpy())
 
         return np.vstack(all_embs)
 
-
-# ---------------------------------------------------------------------
-# Main CLI
-# ---------------------------------------------------------------------
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -100,25 +84,10 @@ def parse_args():
     )
 
     p.add_argument(
-        "--model-type",
-        choices=["bottleneck", "st"],
-        required=True,
-    )
-
-    p.add_argument(
         "--config",
         action="append",
         default=None,
         help="YAML config file for BottleneckAE (repeatable; later files override earlier ones).",
-    )
-    p.add_argument(
-        "--checkpoint",
-        help="Path to BottleneckAE checkpoint (.bin or .safetensors).",
-    )
-
-    p.add_argument(
-        "--st-model",
-        help="Sentence-Transformers model name or HF hub id.",
     )
 
     p.add_argument(
@@ -142,29 +111,22 @@ def parse_args():
 def main():
     args = parse_args()
 
-    if args.model_type == "bottleneck":
-        if not args.config or not args.checkpoint:
-            raise SystemExit("--config and --checkpoint are required for model-type=bottleneck")
+    if not args.config:
+        raise SystemExit("--config is required")
+    
+    config_paths = args.config
+    cfg = merge_bottleneck_configs(*config_paths)
+    model_name = "sentence-transformers/nli-bert-base"
 
-        model, tokenizer, cfg = load_bottleneck_model(
-            config_paths=args.config,
-            checkpoint_path=args.checkpoint,
-            device=args.device,
-        )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-        wrapped_model = BottleneckAEWrapper(
-            model=model,
-            tokenizer=tokenizer,
-            device=args.device,
-            max_length=cfg.model.max_length,
-        )
-        model_name = "BottleneckAE"
-
-    else:  # sentence-transformers
-        if not args.st_model:
-            raise SystemExit("--st-model is required for model-type=sentence-transformers")
-        wrapped_model = mteb.get_model(args.st_model)
-        model_name = args.st_model
+    model = CLSReprEncoder(model_name=model_name)
+    wrapped_model = CLSEncoderWrapper(
+        model,
+        tokenizer=tokenizer,
+        device=args.device,
+        max_length=cfg.model.max_length,
+    )
 
     # ---------------- MTEB tasks & evaluation ----------------
     print(f"Loading MTEB tasks (STS + Probing) ...")

@@ -208,10 +208,13 @@ def build_bottleneck_model(
     cfg: BottleneckExperimentConfig,
     vocab_size: int,
     pad_token_id: int,
+    build_repr_encoder: bool = True,
 ) -> BottleneckAE:
     mc = cfg.model
 
-    repr_encoder = STReprEncoder(model_name=mc.backbone_name)
+    repr_encoder = None
+    if build_repr_encoder:
+        repr_encoder = STReprEncoder(model_name=mc.backbone_name)
 
     encoder = BottleneckEncoder(
         vocab_size=vocab_size,

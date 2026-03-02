@@ -21,7 +21,7 @@ model:
   decoder_dropout: 0.1
 
   # Latent augmentation
-  noise_std: 0.5
+  noise_std: 0.2
   feature_dropout_p: 0.0
 
   # Loss

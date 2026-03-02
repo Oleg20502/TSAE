@@ -73,8 +73,8 @@ class STReprEncoder(BaseTextReprEncoder):
 
 
 
-class SimCSEReprEncoder(BaseTextReprEncoder):
-    """Wraps a HuggingFace SimCSE model.
+class CLSReprEncoder(BaseTextReprEncoder):
+    """Representaion embedder via CLS pooling.
 
     Uses CLS pooling for the sentence embedding and the full last-hidden-state
     for token-level representations.
@@ -87,10 +87,6 @@ class SimCSEReprEncoder(BaseTextReprEncoder):
         self._sent_dim = hidden_size
         self._tok_dim = hidden_size
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
     @property
     def sent_dim(self) -> int:
         return self._sent_dim
@@ -98,10 +94,6 @@ class SimCSEReprEncoder(BaseTextReprEncoder):
     @property
     def tok_dim(self) -> int:
         return self._tok_dim
-
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
 
     def encode(
         self,
@@ -134,10 +126,6 @@ class AllReprEncoder(BaseTextReprEncoder):
         self._sent_dim = hidden_size
         self._tok_dim = hidden_size
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
     @property
     def sent_dim(self) -> int:
         return self._sent_dim
@@ -145,10 +133,6 @@ class AllReprEncoder(BaseTextReprEncoder):
     @property
     def tok_dim(self) -> int:
         return self._tok_dim
-
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
 
     def encode(
         self,
