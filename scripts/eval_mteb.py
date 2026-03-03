@@ -135,6 +135,17 @@ def parse_args():
         default="mteb_results",
         help="Directory to write per-task JSON results.",
     )
+    p.add_argument(
+        "--no-repr",
+        action="store_true",
+        help="Use the BottleneckAE without the representation encoder.",
+    )
+    p.add_argument(
+        "--use-legacy-repr",
+        action="store_true",
+        help="Use CLSReprEncoder as the representation encoder.",
+    )
+
 
     return p.parse_args()
 
@@ -150,6 +161,8 @@ def main():
             config_paths=args.config,
             checkpoint_path=args.checkpoint,
             device=args.device,
+            no_repr=args.no_repr,
+            use_legacy_repr=args.use_legacy_repr,
         )
 
         wrapped_model = BottleneckAEWrapper(

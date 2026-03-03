@@ -3,12 +3,12 @@ model:
   backbone_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
 
-  # Encoder
   d_latent: 768
   d_model: 768
   n_latent_tokens: 2
   max_length: 16
-
+  
+  # Encoder
   encoder_layers: 6
   encoder_heads: 12
   encoder_ff_dim: 3072

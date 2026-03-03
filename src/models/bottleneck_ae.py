@@ -6,8 +6,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoTokenizer
 
-from src.backbones.repr_embedder import BaseTextReprEncoder
-from src.backbones.repr_embedder import STReprEncoder
+from src.backbones.repr_embedder import BaseTextReprEncoder, STReprEncoder, CLSReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
 from src.models.decoder import AutoRegressiveDecoder
@@ -209,12 +208,16 @@ def build_bottleneck_model(
     vocab_size: int,
     pad_token_id: int,
     build_repr_encoder: bool = True,
+    use_legacy_repr: bool = False,
 ) -> BottleneckAE:
     mc = cfg.model
 
     repr_encoder = None
     if build_repr_encoder:
-        repr_encoder = STReprEncoder(model_name=mc.backbone_name)
+        if use_legacy_repr:
+            repr_encoder = CLSReprEncoder(model_name=mc.backbone_name)
+        else:
+            repr_encoder = STReprEncoder(model_name=mc.backbone_name)
 
     encoder = BottleneckEncoder(
         vocab_size=vocab_size,
@@ -260,6 +263,8 @@ def load_bottleneck_model(
     config_paths: List[str],
     checkpoint_path: str,
     device: str,
+    no_repr: bool = False,
+    use_legacy_repr: bool = False
 ):
     """Rebuild BottleneckAE from YAML config(s) and load HF Trainer checkpoint."""
     cfg = merge_bottleneck_configs(*config_paths)
@@ -267,7 +272,13 @@ def load_bottleneck_model(
     vocab_size = tokenizer.vocab_size
     pad_token_id = tokenizer.pad_token_id or 0
 
-    model = build_bottleneck_model(cfg, vocab_size, pad_token_id)
+    model = build_bottleneck_model(
+        cfg,
+        vocab_size,
+        pad_token_id,
+        build_repr_encoder = not no_repr,
+        use_legacy_repr = use_legacy_repr
+    )
 
     if checkpoint_path.endswith(".safetensors"):
         from safetensors.torch import load_file
