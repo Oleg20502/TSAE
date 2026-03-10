@@ -12,7 +12,7 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.backbones.repr_embedder import BaseTextReprEncoder
-from src.models.bottleneck_encoder import BottleneckEncoder
+from src.models.encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
 from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
 from src.models.bottleneck_ae import BottleneckAE
