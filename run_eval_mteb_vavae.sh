@@ -5,9 +5,9 @@ export CUDA_VISIBLE_DEVICES="1"
 
 python scripts/eval_mteb.py \
     --model-type bottleneck \
-    --config configs/model/bottleneck_bert.yaml \
-    --checkpoint outputs/vavae_bert_nl_2/checkpoint-710000/model.safetensors \
-    --output-dir mteb_results/vavae-710000/ \
-    --batch-size 32
+    --config configs/model/bottleneck_mpnet.yaml \
+    --checkpoint outputs/vavae_mpnet_nl_2_std_0.2_sl_10/checkpoint-425000/model.safetensors \
+    --output-dir mteb_results/vavae_mpnet_nl_2_std_0.2_sl_10-425000/ \
+    --batch-size 32 \
 
 echo "done"

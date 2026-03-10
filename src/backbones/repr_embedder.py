@@ -65,7 +65,7 @@ class STReprEncoder(BaseTextReprEncoder):
         out = self.model(features, **model_kwargs)
         sent_emb = out["sentence_embedding"]
 
-        return sent_emb, out
+        return sent_emb
     
     @property
     def sent_dim(self) -> int:
@@ -103,7 +103,7 @@ class CLSReprEncoder(BaseTextReprEncoder):
         outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
         tok_emb = outputs.last_hidden_state          # (B, T, H)
         sent_emb = tok_emb[:, 0, :]                  # CLS pooling  (B, H)
-        return sent_emb, tok_emb
+        return sent_emb
 
     def forward(
         self,
@@ -142,7 +142,7 @@ class AllReprEncoder(BaseTextReprEncoder):
         outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
         tok_emb = outputs.last_hidden_state          # (B, T, H)
         sent_emb = tok_emb.mean(dim=1)              # (B, H)
-        return sent_emb, tok_emb
+        return sent_emb
 
     def forward(
         self,

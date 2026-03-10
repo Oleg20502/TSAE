@@ -40,7 +40,7 @@ To avoid long preprocessing at training time (paragraph split + shuffle on 6M+ r
 
 Run once; downloads HF dataset, splits paragraphs, shuffles, writes train/val:
    ```bash
-   python scripts/prepare_dataset.py --configs configs/data/wiki_sentences.yaml
+   python scripts/prepare_dataset.py --configs configs/preprocess/wikipedia_preprocess.yaml
    ```
 
 ## Launching training

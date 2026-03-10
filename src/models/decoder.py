@@ -1,8 +1,5 @@
 """Transformer decoder with causal self-attention and cross-attention to latent tokens."""
 
-from __future__ import annotations
-
-import math
 from typing import Optional, Tuple
 
 import torch

@@ -239,3 +239,14 @@ def merge_bottleneck_configs(*paths: str | Path) -> BottleneckExperimentConfig:
             else:
                 merged[section] = values
     return from_dict(data_class=BottleneckExperimentConfig, data=merged, config=_DACITE_CFG)
+
+
+def load_bottleneck_config_from_paths(paths: list[str] | list[Path]) -> BottleneckExperimentConfig:
+    """Load Bottleneck config from one or more YAML files.
+
+    - Single path: file must contain full experiment config (model, train, data sections).
+    - Multiple paths: files are merged by section (later overrides earlier), same as merge_bottleneck_configs.
+    """
+    if len(paths) == 1:
+        return load_bottleneck_config(paths[0])
+    return merge_bottleneck_configs(*paths)
