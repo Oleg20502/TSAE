@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, TrainingArguments
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.utils.config import load_bottleneck_config, BottleneckExperimentConfig
+from src.utils.config import load_config, save_config, BottleneckExperimentConfig
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.decoder import AutoRegressiveDecoder
 from src.models.bottleneck_ae import BottleneckAE
@@ -83,8 +83,13 @@ def main():
     args = parser.parse_args()
 
     # Load config
-    cfg = load_bottleneck_config(args.config)
+    cfg = load_config(args.config)
     print(f"=== Config ===\n{cfg}\n")
+
+    # Save all hyperparameters to output_dir
+    tc = cfg.train
+    Path(tc.output_dir).mkdir(parents=True, exist_ok=True)
+    save_config(cfg, Path(tc.output_dir) / "config.yaml")
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
@@ -102,7 +107,6 @@ def main():
     collator = ARDecoderCollator.from_data_config(tokenizer, cfg.data)
 
     # Training arguments
-    tc = cfg.train
     training_args = TrainingArguments(
         output_dir=tc.output_dir,
         num_train_epochs=tc.epochs,

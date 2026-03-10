@@ -69,7 +69,7 @@ def main():
 
     # Data
     datasets = load_text_dataset(cfg.data)
-    collator = ARDecoderCollator.from_data_config(tokenizer, cfg.data)
+    collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
     val_loader = DataLoader(
         datasets["validation"],
         batch_size=cfg.eval.batch_size,

@@ -1,6 +1,6 @@
 """Dataclass-based configuration with YAML loading."""
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -205,7 +205,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     return from_dict(data_class=ExperimentConfig, data=raw, config=_DACITE_CFG)
 
 
-def load_bottleneck_config(path: str | Path) -> BottleneckExperimentConfig:
+def load_config(path: str | Path) -> BottleneckExperimentConfig:
     """Load a BottleneckExperimentConfig from a YAML file."""
     raw = load_yaml(path)
     return from_dict(data_class=BottleneckExperimentConfig, data=raw, config=_DACITE_CFG)
@@ -241,12 +241,20 @@ def merge_bottleneck_configs(*paths: str | Path) -> BottleneckExperimentConfig:
     return from_dict(data_class=BottleneckExperimentConfig, data=merged, config=_DACITE_CFG)
 
 
-def load_bottleneck_config_from_paths(paths: list[str] | list[Path]) -> BottleneckExperimentConfig:
+def load_config_from_paths(paths: list[str] | list[Path]) -> BottleneckExperimentConfig:
     """Load Bottleneck config from one or more YAML files.
 
     - Single path: file must contain full experiment config (model, train, data sections).
     - Multiple paths: files are merged by section (later overrides earlier), same as merge_bottleneck_configs.
     """
     if len(paths) == 1:
-        return load_bottleneck_config(paths[0])
+        return load_config(paths[0])
     return merge_bottleneck_configs(*paths)
+
+
+def save_config(cfg: BottleneckExperimentConfig, path: str | Path) -> None:
+    """Save experiment config to a YAML file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(asdict(cfg), f, default_flow_style=False, allow_unicode=True, sort_keys=False)
