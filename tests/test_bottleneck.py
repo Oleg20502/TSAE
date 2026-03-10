@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.backbones.repr_embedder import BaseTextReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
-from src.models.decoder import AutoRegressiveDecoder
+from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
 from src.models.bottleneck_ae import BottleneckAE
 
 
@@ -256,6 +256,28 @@ def _build_bottleneck_model():
     )
 
 
+def _build_bottleneck_model_parallel():
+    encoder = BottleneckEncoder(
+        vocab_size=VOCAB, d_model=D_LATENT, d_latent=D_LATENT,
+        n_latent_tokens=N_LATENT,
+        n_layers=2, n_heads=N_HEADS, d_ff=D_LATENT * 2,
+        max_length=T, pad_token_id=0,
+    )
+    decoder = ParallelLatentDecoder(
+        vocab_size=VOCAB, d_model=D_DEC, n_layers=2, n_heads=N_HEADS,
+        d_ff=D_DEC * 2, max_length=T, pad_token_id=0,
+    )
+    repr_enc = DummyReprEncoder(hidden_size=H)
+    return BottleneckAE(
+        encoder=encoder,
+        decoder=decoder,
+        repr_encoder=repr_enc,
+        latent_aug=LatentAugmentation(noise_std=0.05, feature_dropout_p=0.1),
+        lambda_sem=0.2,
+        freeze_repr=False,
+    )
+
+
 def _make_batch():
     input_ids = torch.randint(1, VOCAB, (B, T))
     attention_mask = torch.ones(B, T, dtype=torch.long)
@@ -277,6 +299,12 @@ class TestBottleneckTrainStep:
         batch = _make_batch()
         out = model(**batch)
         assert torch.isfinite(out["loss"]), f"Loss is not finite: {out['loss']}"
+
+    def test_loss_is_finite_parallel_decoder(self):
+        model = _build_bottleneck_model_parallel()
+        batch = _make_batch()
+        out = model(**batch)
+        assert torch.isfinite(out["loss"]), f"Loss is not finite (parallel): {out['loss']}"
 
     def test_backward_runs(self):
         model = _build_bottleneck_model()

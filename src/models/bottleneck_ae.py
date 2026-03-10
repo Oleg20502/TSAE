@@ -9,7 +9,7 @@ from transformers import AutoTokenizer
 from src.backbones.repr_embedder import BaseTextReprEncoder, STReprEncoder, CLSReprEncoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
-from src.models.decoder import AutoRegressiveDecoder
+from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
 from src.utils.config import BottleneckExperimentConfig, load_bottleneck_config_from_paths
 from src.losses.reconstruction import reconstruction_loss
 from src.losses.semantic import semantic_consistency_loss
@@ -232,16 +232,30 @@ def build_bottleneck_model(
         pad_token_id=pad_token_id,
     )
 
-    decoder = AutoRegressiveDecoder(
-        vocab_size=vocab_size,
-        d_model=mc.d_model,
-        n_layers=mc.decoder_layers,
-        n_heads=mc.decoder_heads,
-        d_ff=mc.decoder_ff_dim,
-        max_length=mc.max_length,
-        dropout=mc.decoder_dropout,
-        pad_token_id=pad_token_id,
-    )
+    if mc.decoder_type == "autoregressive":
+        decoder: nn.Module = AutoRegressiveDecoder(
+            vocab_size=vocab_size,
+            d_model=mc.d_model,
+            n_layers=mc.decoder_layers,
+            n_heads=mc.decoder_heads,
+            d_ff=mc.decoder_ff_dim,
+            max_length=mc.max_length,
+            dropout=mc.decoder_dropout,
+            pad_token_id=pad_token_id,
+        )
+    elif mc.decoder_type == "parallel":
+        decoder = ParallelLatentDecoder(
+            vocab_size=vocab_size,
+            d_model=mc.d_model,
+            n_layers=mc.decoder_layers,
+            n_heads=mc.decoder_heads,
+            d_ff=mc.decoder_ff_dim,
+            max_length=mc.max_length,
+            dropout=mc.decoder_dropout,
+            pad_token_id=pad_token_id,
+        )
+    else:
+        raise ValueError(f"Unknown decoder_type: {mc.decoder_type}")
 
     latent_aug = LatentAugmentation(
         noise_std=mc.noise_std,

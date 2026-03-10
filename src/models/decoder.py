@@ -190,3 +190,109 @@ class AutoRegressiveDecoder(nn.Module):
             dec_hidden = x.mean(dim=1)
 
         return logits, dec_hidden
+
+
+class ParallelLatentDecoder(nn.Module):
+    """Non-autoregressive decoder that reconstructs all tokens from the latent in one pass.
+
+    Mirrors a COSMOS-style decompressor: positions are parameterised only by
+    positional embeddings and attend to the latent tokens; no token inputs.
+    """
+
+    def __init__(
+        self,
+        vocab_size: int,
+        d_model: int = 256,
+        n_layers: int = 4,
+        n_heads: int = 4,
+        d_ff: int = 512,
+        max_length: int = 128,
+        dropout: float = 0.1,
+        pad_token_id: int = 0,
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.max_length = max_length
+        self.pad_token_id = pad_token_id
+
+        # Positional embeddings for output queries (no token embeddings)
+        self.pos_emb = nn.Embedding(max_length, d_model)
+        self.emb_dropout = nn.Dropout(dropout)
+
+        # Projection from latent dim to decoder dim (in case they differ)
+        self.latent_proj: nn.Module = nn.Identity()
+
+        # Reuse DecoderBlock but without causal masking (we pass an all-false mask)
+        self.blocks = nn.ModuleList(
+            [DecoderBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
+        )
+
+        self.ln_f = nn.LayerNorm(d_model)
+
+        # LM head
+        self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for name, p in self.named_parameters():
+            if "weight" in name and p.dim() >= 2:
+                nn.init.xavier_uniform_(p)
+            elif "bias" in name:
+                nn.init.zeros_(p)
+
+    def forward(
+        self,
+        latent_tokens: torch.Tensor,
+        decoder_input_ids: torch.Tensor,
+        decoder_attention_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            latent_tokens:          (B, L, D_lat) encoder latent sequence.
+            decoder_input_ids:      (B, T) token ids, used only to define T.
+            decoder_attention_mask: (B, T) 1 for real, 0 for pad (for pooling).
+
+        Returns:
+            logits:     (B, T, V)
+            dec_hidden: (B, D) mean-pooled decoder hidden state.
+        """
+        B, T = decoder_input_ids.shape
+        device = latent_tokens.device
+
+        if T > self.max_length:
+            raise ValueError(
+                f"T={T} exceeds max_length={self.max_length} for ParallelLatentDecoder."
+            )
+
+        # Output queries: purely positional
+        positions = torch.arange(T, device=device).unsqueeze(0)  # (1, T)
+        x = self.pos_emb(positions)
+        x = self.emb_dropout(x)
+        x = x.expand(B, T, -1)  # (B, T, D)
+
+        # Project latent tokens to decoder dim
+        latent_tokens = self.latent_proj(latent_tokens)
+
+        # No causality: allow every position to see all others
+        causal_mask = torch.zeros(T, T, dtype=torch.bool, device=device)
+
+        self_kp_mask = None
+        if decoder_attention_mask is not None:
+            # Same semantics as in AutoRegressiveDecoder: True = ignore
+            self_kp_mask = decoder_attention_mask.eq(0)
+
+        for block in self.blocks:
+            x = block(x, latent_tokens, causal_mask, self_kp_mask)
+
+        x = self.ln_f(x)
+
+        logits = self.lm_head(x)  # (B, T, V)
+
+        if decoder_attention_mask is not None:
+            mask_f = decoder_attention_mask.unsqueeze(-1).float()  # (B, T, 1)
+            dec_hidden = (x * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
+        else:
+            dec_hidden = x.mean(dim=1)
+
+        return logits, dec_hidden
