@@ -25,4 +25,4 @@ model:
   feature_dropout_p: 0.0
 
   # Loss
-  lambda_sem: 0.2
+  lambda_sem: 10

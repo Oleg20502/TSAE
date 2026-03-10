@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+# Legacy script, should be deprecated and removed. Left for future rebuilding
 """Evaluate a trained RAE-text autoencoder."""
+
 
 import argparse
 import json

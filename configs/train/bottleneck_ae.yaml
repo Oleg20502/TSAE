@@ -1,5 +1,5 @@
 train:
-  output_dir: outputs/vavae_mpnet_nl_2_std_0.2
+  output_dir: outputs/vavae_mpnet_nl_2_std_0.2_sl_10
   lr: 1.0e-4
   weight_decay: 0.01
   epochs: 100
