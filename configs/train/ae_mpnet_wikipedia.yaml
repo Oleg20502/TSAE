@@ -1,8 +1,8 @@
-# Full experiment config: NLI-BERT backbone + FineWeb 10BT
-# Run: scripts/train_bottleneck.py --config configs/experiments/bottleneck_bert_fineweb_10bt.yaml
+# Full experiment config: MPNet backbone + Wikipedia prepared data
+# Run: scripts/train_bottleneck.py --config configs/train/ae_mpnet_wikipedia.yaml
 
 model:
-  backbone_name: "sentence-transformers/nli-bert-base"
+  backbone_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
   d_latent: 768
   d_model: 768
@@ -18,7 +18,7 @@ model:
   decoder_dropout: 0.1
   noise_std: 0.2
   feature_dropout_p: 0.0
-  lambda_sem: 0.2
+  lambda_sem: 10
 
 train:
   output_dir: outputs/vavae_mpnet_nl_2_std_0.2_sl_10
@@ -40,8 +40,7 @@ train:
   report_to: tensorboard
 
 data:
-  preprocessed_dir: /home/okashurin/okashurin/datasets/fineweb_10bt_chunks
-  max_length: 16
-  num_train_samples: null
-  num_val_samples: null
+  preprocessed_dir: data/wiki_prepared
+  num_train_samples: 100000
+  num_val_samples: 2000
   seed: 42

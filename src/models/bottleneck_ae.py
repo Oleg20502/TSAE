@@ -10,7 +10,7 @@ from src.backbones.repr_embedder import BaseTextReprEncoder, STReprEncoder, CLSR
 from src.models.bottleneck_encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
 from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
-from src.utils.config import BottleneckExperimentConfig, load_bottleneck_config_from_paths
+from src.utils.config import BottleneckExperimentConfig, load_config_from_paths
 from src.losses.reconstruction import reconstruction_loss
 from src.losses.semantic import semantic_consistency_loss
 
@@ -281,7 +281,7 @@ def load_bottleneck_model(
     use_legacy_repr: bool = False
 ):
     """Rebuild BottleneckAE from YAML config(s) and load HF Trainer checkpoint."""
-    cfg = load_bottleneck_config_from_paths(config_paths)
+    cfg = load_config_from_paths(config_paths)
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
     vocab_size = tokenizer.vocab_size
     pad_token_id = tokenizer.pad_token_id or 0
