@@ -2,13 +2,12 @@ model:
   backbone_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
   
-  n_latent_tokens: 2
+  n_latent_tokens: 1
   max_length: 16
   noise_std: 0.2
   feature_dropout_p: 0.0
   lambda_sem: 10
 
-  d_latent: 768
   d_model: 768
 
   # encoder
@@ -25,7 +24,7 @@ model:
   decoder_dropout: 0.1
 
 train:
-  output_dir: outputs/vavae_mpnet_nl_2_std_0.2_sl_10
+  output_dir: outputs/vavae_mpnet_nl_1_std_0.2_sl_10
   lr: 1.0e-4
   weight_decay: 0.01
   epochs: 100

@@ -35,7 +35,6 @@ def build_rae_model(
     encoder = BottleneckEncoder(
         vocab_size=vocab_size,
         d_model=mc.d_model,
-        d_latent=mc.d_latent,
         n_latent_tokens=mc.n_latent_tokens,
         n_layers=mc.encoder_layers,
         n_heads=mc.encoder_heads,

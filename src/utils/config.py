@@ -136,7 +136,6 @@ class BottleneckModelConfig:
     backbone_name: str = "princeton-nlp/sup-simcse-bert-base-uncased"
     freeze_repr: bool = True
 
-    d_latent: int = 256
     d_model: int = 256
     max_length: int = 128
     n_latent_tokens: int = 1
