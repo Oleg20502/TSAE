@@ -52,7 +52,7 @@ class BottleneckAE(nn.Module):
 
         # Semantic projection: latent -> repr_encoder sentence dim
         if self.repr_encoder:
-            self.sem_proj = nn.Linear(encoder.d_latent, repr_encoder.sent_dim)
+            self.sem_proj = nn.Linear(encoder.d_model, repr_encoder.sent_dim)
 
         # Freeze the representation backbone
         if freeze_repr and self.repr_encoder:
@@ -222,7 +222,6 @@ def build_bottleneck_model(
     encoder = BottleneckEncoder(
         vocab_size=vocab_size,
         d_model=mc.d_model,
-        d_latent=mc.d_latent,
         n_latent_tokens=mc.n_latent_tokens,
         n_layers=mc.encoder_layers,
         n_heads=mc.encoder_heads,

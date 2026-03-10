@@ -1,7 +1,5 @@
 """Bottleneck encoder: compresses text into latent tokens via self-attn + cross-attn transformer."""
 
-from __future__ import annotations
-
 from typing import Optional
 
 import torch
@@ -102,7 +100,6 @@ class BottleneckEncoder(nn.Module):
         self,
         vocab_size: int,
         d_model: int = 256,
-        d_latent: int = 256,
         n_latent_tokens: int = 1,
         n_layers: int = 4,
         n_heads: int = 4,
@@ -113,7 +110,6 @@ class BottleneckEncoder(nn.Module):
     ):
         super().__init__()
         self.d_model = d_model
-        self.d_latent = d_latent
         self.n_latent_tokens = n_latent_tokens
         self.max_length = max_length
         self.pad_token_id = pad_token_id
@@ -132,12 +128,6 @@ class BottleneckEncoder(nn.Module):
         )
 
         self.ln_f = nn.LayerNorm(d_model)
-
-        # Project from d_model to d_latent if they differ
-        if d_model != d_latent:
-            self.latent_proj = nn.Linear(d_model, d_latent)
-        else:
-            self.latent_proj = nn.Identity()
 
         self._init_weights()
 
@@ -165,7 +155,7 @@ class BottleneckEncoder(nn.Module):
             attention_mask:  (B, T) 1 for real tokens, 0 for padding.
 
         Returns:
-            latent: (B, n_latent_tokens, d_latent) compressed latent sequence.
+            latent: (B, n_latent_tokens, d_model) compressed latent sequence.
         """
         B, T = input_ids.shape
         device = input_ids.device
@@ -189,6 +179,6 @@ class BottleneckEncoder(nn.Module):
 
         # Final layer norm and projection
         latent = self.ln_f(latent_query)         # (B, n_latent_tokens, d_model)
-        latent = self.latent_proj(latent)         # (B, n_latent_tokens, d_latent)
+        latent = self.latent_proj(latent)         # (B, n_latent_tokens, d_model)
 
         return latent

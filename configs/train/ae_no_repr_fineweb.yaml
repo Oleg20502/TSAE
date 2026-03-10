@@ -1,7 +1,6 @@
 model:
   backbone_name: "sentence-transformers/nli-bert-base"
   freeze_repr: true
-  d_latent: 768
   d_model: 768
   n_latent_tokens: 4
   max_length: 16

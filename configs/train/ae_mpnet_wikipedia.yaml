@@ -4,7 +4,6 @@
 model:
   backbone_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
-  d_latent: 768
   d_model: 768
   n_latent_tokens: 2
   max_length: 16
