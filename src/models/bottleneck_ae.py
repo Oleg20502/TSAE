@@ -7,7 +7,7 @@ import torch.nn as nn
 from transformers import AutoTokenizer
 
 from src.backbones.repr_embedder import BaseTextReprEncoder, STReprEncoder, CLSReprEncoder
-from src.models.bottleneck_encoder import BottleneckEncoder
+from src.models.encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
 from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
 from src.utils.config import BottleneckExperimentConfig, load_config_from_paths

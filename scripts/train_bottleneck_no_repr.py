@@ -11,7 +11,7 @@ from transformers import AutoTokenizer, TrainingArguments
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.utils.config import load_config, save_config, BottleneckExperimentConfig
-from src.models.bottleneck_encoder import BottleneckEncoder
+from src.models.encoder import BottleneckEncoder
 from src.models.decoder import AutoRegressiveDecoder
 from src.models.bottleneck_ae import BottleneckAE
 from src.data.datasets import load_text_dataset
@@ -104,7 +104,7 @@ def main():
 
     # Data
     datasets = load_text_dataset(cfg.data)
-    collator = ARDecoderCollator.from_data_config(tokenizer, cfg.data)
+    collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
 
     # Training arguments
     training_args = TrainingArguments(

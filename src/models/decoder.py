@@ -101,10 +101,6 @@ class AutoRegressiveDecoder(nn.Module):
         self.pos_emb = nn.Embedding(max_length, d_model)
         self.emb_dropout = nn.Dropout(dropout)
 
-        # Projection from latent dim to decoder dim (in case they differ)
-        # Will be set as identity if dims match; caller can replace
-        self.latent_proj: nn.Module = nn.Identity()
-
         # Transformer blocks
         self.blocks = nn.ModuleList(
             [DecoderBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
@@ -162,9 +158,6 @@ class AutoRegressiveDecoder(nn.Module):
         x = self.tok_emb(decoder_input_ids) + self.pos_emb(positions)
         x = self.emb_dropout(x)
 
-        # Project latent tokens to decoder dim
-        latent_tokens = self.latent_proj(latent_tokens)
-
         # Causal mask
         causal_mask = self._make_causal_mask(T, device)
 
@@ -219,9 +212,6 @@ class ParallelLatentDecoder(nn.Module):
         self.pos_emb = nn.Embedding(max_length, d_model)
         self.emb_dropout = nn.Dropout(dropout)
 
-        # Projection from latent dim to decoder dim (in case they differ)
-        self.latent_proj: nn.Module = nn.Identity()
-
         # Reuse DecoderBlock but without causal masking (we pass an all-false mask)
         self.blocks = nn.ModuleList(
             [DecoderBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
@@ -270,9 +260,6 @@ class ParallelLatentDecoder(nn.Module):
         x = self.pos_emb(positions)
         x = self.emb_dropout(x)
         x = x.expand(B, T, -1)  # (B, T, D)
-
-        # Project latent tokens to decoder dim
-        latent_tokens = self.latent_proj(latent_tokens)
 
         # No causality: allow every position to see all others
         causal_mask = torch.zeros(T, T, dtype=torch.bool, device=device)
