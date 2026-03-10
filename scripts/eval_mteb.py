@@ -35,6 +35,7 @@ from mteb.models.model_meta import ModelMeta
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.backbones.repr_embedder import STReprEncoder
 from src.models.bottleneck_ae import BottleneckAE, load_bottleneck_model
 
 
@@ -42,8 +43,8 @@ from src.models.bottleneck_ae import BottleneckAE, load_bottleneck_model
 # MTEB v2 encoder wrapper (implements AbsEncoder protocol)
 # ---------------------------------------------------------------------
 
-class BottleneckAEWrapper(AbsEncoder):
-    """Wrap BottleneckAE as an MTEB-compatible encoder.
+class EncoderWrapper(AbsEncoder):
+    """Wrap BottleneckAE or  as an MTEB-compatible encoder.
 
     Uses mean-pooled latent tokens as the sentence embedding.
     Inherits similarity / similarity_pairwise from AbsEncoder.
@@ -51,10 +52,11 @@ class BottleneckAEWrapper(AbsEncoder):
 
     def __init__(
         self,
-        model: BottleneckAE,
+        model: BottleneckAE | STReprEncoder,
         tokenizer: AutoTokenizer,
         device: str = "cuda",
-        max_length: int = 128,
+        max_length: int = 16,
+        force_pool: bool = False,
     ) -> None:
         self.model = model.to(device)
         self.model.eval()
@@ -62,6 +64,8 @@ class BottleneckAEWrapper(AbsEncoder):
         self.device = torch.device(device)
         self.max_length = max_length
         self.mteb_model_meta = ModelMeta.create_empty()
+
+        self.force_pool = force_pool
 
     @torch.no_grad()
     def encode(self, inputs, *, task_metadata, hf_split, hf_subset,
@@ -82,8 +86,9 @@ class BottleneckAEWrapper(AbsEncoder):
             )
             enc = {k: v.to(self.device) for k, v in enc.items()}
 
-            z = self.model.encode(enc["input_ids"], enc["attention_mask"])
-            embs = z.mean(dim=1)  # (B, d_latent)
+            embs = self.model.encode(enc["input_ids"], enc["attention_mask"])
+            if self.force_pool:
+                embs = embs.mean(dim=1)  # (B, d_latent)
 
             all_embs.append(embs.cpu().numpy())
 
@@ -122,6 +127,12 @@ def parse_args():
     )
 
     p.add_argument(
+        "--max-length",
+        type=int,
+        default=16,
+    )
+
+    p.add_argument(
         "--device",
         default="cuda" if torch.cuda.is_available() else "cpu",
     )
@@ -146,7 +157,6 @@ def parse_args():
         help="Use CLSReprEncoder as the representation encoder.",
     )
 
-
     return p.parse_args()
 
 
@@ -165,19 +175,32 @@ def main():
             use_legacy_repr=args.use_legacy_repr,
         )
 
-        wrapped_model = BottleneckAEWrapper(
+        wrapped_model = EncoderWrapper(
             model=model,
             tokenizer=tokenizer,
             device=args.device,
             max_length=cfg.model.max_length,
+            force_pool = True,
         )
         model_name = "BottleneckAE"
 
     else:  # sentence-transformers
         if not args.st_model:
             raise SystemExit("--st-model is required for model-type=sentence-transformers")
-        wrapped_model = mteb.get_model(args.st_model)
-        model_name = args.st_model
+
+        model_name = args.st_model       
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name) 
+        model = STReprEncoder(model_name=model_name)
+
+        wrapped_model = EncoderWrapper(
+            model=model,
+            tokenizer=tokenizer,
+            device=args.device,
+            max_length=args.max_length,
+            force_pool = False,
+        )
+
 
     # ---------------- MTEB tasks & evaluation ----------------
     print(f"Loading MTEB tasks (STS + Probing) ...")

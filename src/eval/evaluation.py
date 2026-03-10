@@ -68,7 +68,7 @@ def evaluate(
         gen_texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
 
         # Semantic similarity
-        sent_emb, _ = model.repr_encoder.encode(batch["input_ids"], batch["attention_mask"])
+        sent_emb = model.repr_encoder.encode(batch["input_ids"], batch["attention_mask"])
         z_emb = model.encode(batch["input_ids"], batch["attention_mask"])
 
         

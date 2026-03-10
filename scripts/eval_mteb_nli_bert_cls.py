@@ -71,7 +71,7 @@ class CLSEncoderWrapper(AbsEncoder):
             )
             enc = {k: v.to(self.device) for k, v in enc.items()}
 
-            embs, _ = self.model.encode(enc["input_ids"], enc["attention_mask"])
+            embs = self.model.encode(enc["input_ids"], enc["attention_mask"])
 
             all_embs.append(embs.cpu().numpy())
 

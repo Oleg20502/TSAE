@@ -76,7 +76,7 @@ class BottleneckAE(nn.Module):
         sent_emb = None
         if self.repr_encoder:
             with torch.no_grad():
-                sent_emb, _ = self.repr_encoder.encode(input_ids, attention_mask)
+                sent_emb = self.repr_encoder.encode(input_ids, attention_mask)
 
         return sent_emb
 
