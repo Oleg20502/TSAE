@@ -148,6 +148,7 @@ class BottleneckModelConfig:
     encoder_dropout: float = 0.1
 
     # Decoder
+    decoder_type: str = "autoregressive"  # "autoregressive" or "parallel"
     decoder_layers: int = 4
     decoder_heads: int = 4
     decoder_ff_dim: int = 512

@@ -10,7 +10,9 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.backbones.repr_embedder import BaseTextReprEncoder
-from src.models.decoder import AutoRegressiveDecoder
+from src.models.bottleneck_ae import BottleneckAE
+from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
+from src.models.bottleneck_encoder import BottleneckEncoder
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +114,43 @@ class TestDecoderShapes:
         assert dec_hidden.shape == (B, D_DEC)
 
     def test_no_mask(self, decoder):
+        latent_tokens = torch.randn(B, 1 + M, D_DEC)
+        dec_ids = torch.randint(0, VOCAB, (B, T))
+
+        logits, dec_hidden = decoder(latent_tokens, dec_ids)
+        assert logits.shape == (B, T, VOCAB)
+        assert dec_hidden.shape == (B, D_DEC)
+
+
+class TestParallelDecoderShapes:
+    def test_output_shapes_parallel(self):
+        decoder = ParallelLatentDecoder(
+            vocab_size=VOCAB,
+            d_model=D_DEC,
+            n_layers=2,
+            n_heads=N_HEADS,
+            d_ff=D_DEC * 2,
+            max_length=T,
+            pad_token_id=0,
+        )
+        latent_tokens = torch.randn(B, 1 + M, D_DEC)
+        dec_ids = torch.randint(0, VOCAB, (B, T))
+        dec_mask = torch.ones(B, T, dtype=torch.long)
+
+        logits, dec_hidden = decoder(latent_tokens, dec_ids, dec_mask)
+        assert logits.shape == (B, T, VOCAB)
+        assert dec_hidden.shape == (B, D_DEC)
+
+    def test_output_shapes_parallel_no_mask(self):
+        decoder = ParallelLatentDecoder(
+            vocab_size=VOCAB,
+            d_model=D_DEC,
+            n_layers=2,
+            n_heads=N_HEADS,
+            d_ff=D_DEC * 2,
+            max_length=T,
+            pad_token_id=0,
+        )
         latent_tokens = torch.randn(B, 1 + M, D_DEC)
         dec_ids = torch.randint(0, VOCAB, (B, T))
 
