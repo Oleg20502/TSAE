@@ -120,7 +120,7 @@ class BottleneckAE(nn.Module):
         z_aug = self.latent_aug(z)
 
         # Decode
-        logits, _dec_hidden = self.decoder(
+        logits = self.decoder(
             latent_tokens=z_aug,
             decoder_input_ids=decoder_input_ids,
             decoder_attention_mask=decoder_attention_mask,

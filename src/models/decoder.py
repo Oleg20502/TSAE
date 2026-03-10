@@ -175,14 +175,7 @@ class AutoRegressiveDecoder(nn.Module):
         # LM logits
         logits = self.lm_head(x)  # (B, T, V)
 
-        # Pooled decoder state for semantic head
-        if decoder_attention_mask is not None:
-            mask_f = decoder_attention_mask.unsqueeze(-1).float()  # (B, T, 1)
-            dec_hidden = (x * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
-        else:
-            dec_hidden = x.mean(dim=1)
-
-        return logits, dec_hidden
+        return logits
 
 
 class ParallelLatentDecoder(nn.Module):
@@ -276,10 +269,4 @@ class ParallelLatentDecoder(nn.Module):
 
         logits = self.lm_head(x)  # (B, T, V)
 
-        if decoder_attention_mask is not None:
-            mask_f = decoder_attention_mask.unsqueeze(-1).float()  # (B, T, 1)
-            dec_hidden = (x * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
-        else:
-            dec_hidden = x.mean(dim=1)
-
-        return logits, dec_hidden
+        return logits

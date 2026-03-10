@@ -177,8 +177,7 @@ class BottleneckEncoder(nn.Module):
         for block in self.blocks:
             text_tokens, latent_query = block(text_tokens, latent_query, text_kp_mask)
 
-        # Final layer norm and projection
+        # Final layer norm
         latent = self.ln_f(latent_query)         # (B, n_latent_tokens, d_model)
-        latent = self.latent_proj(latent)         # (B, n_latent_tokens, d_model)
 
         return latent
