@@ -86,15 +86,23 @@ def main():
         data_collator=collator,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
         compute_metrics=compute_metrics,
+        ema_decay=tc.ema_decay,
     )
 
     # Train
     trainer.train()
 
-    # Save final model
-    trainer.save_model(tc.output_dir + "/final")
-    tokenizer.save_pretrained(tc.output_dir + "/final")
-    print(f"Model saved to {tc.output_dir}/final")
+    # Save final EMA and non-EMA models
+    final_ema_dir = tc.output_dir + "/final"
+    trainer.save_model(final_ema_dir)
+    tokenizer.save_pretrained(final_ema_dir)
+    print(f"EMA model saved to {final_ema_dir}")
+
+    if tc.ema_decay is not None and tc.ema_decay > 0.0:
+        final_raw_dir = tc.output_dir + "/final_raw"
+        trainer.save_non_ema_model(final_raw_dir)
+        tokenizer.save_pretrained(final_raw_dir)
+        print(f"Non-EMA model saved to {final_raw_dir}")
 
 
 if __name__ == "__main__":
