@@ -36,7 +36,7 @@ class ARDecoderCollator:
     def from_data_config(
         cls,
         tokenizer: PreTrainedTokenizerBase,
-        data_config: "DataConfig",
+        data_config: DataConfig,
     ) -> ARDecoderCollator:
         """Build collator from a data config (max_length and text_column from config)."""
         return cls(

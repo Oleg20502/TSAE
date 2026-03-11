@@ -6,9 +6,6 @@ export CUDA_VISIBLE_DEVICES="4,5,6,7"
 NP=4
 
 accelerate launch --num_processes $NP --config_file ./accel_configs/fp32_ds_s2.yaml \
-    scripts/train_bottleneck.py --configs \
-        configs/model/bottleneck_bert.yaml \
-        configs/datasets/fineweb_10bt.yaml \
-        configs/train/bottleneck_ae.yaml
+    scripts/train_bottleneck.py --config configs/experiments/bottleneck_bert_fineweb_10bt.yaml
 
 echo "done"

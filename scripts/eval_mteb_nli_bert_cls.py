@@ -43,7 +43,7 @@ class CLSEncoderWrapper(AbsEncoder):
         model,
         tokenizer: AutoTokenizer,
         device: str = "cuda",
-        max_length: int = 128,
+        max_length: int = 16,
     ) -> None:
         self.model = model.to(device)
         self.model.eval()
@@ -71,7 +71,7 @@ class CLSEncoderWrapper(AbsEncoder):
             )
             enc = {k: v.to(self.device) for k, v in enc.items()}
 
-            embs, _ = self.model.encode(enc["input_ids"], enc["attention_mask"])
+            embs = self.model.encode(enc["input_ids"], enc["attention_mask"])
 
             all_embs.append(embs.cpu().numpy())
 
@@ -81,13 +81,6 @@ class CLSEncoderWrapper(AbsEncoder):
 def parse_args():
     p = argparse.ArgumentParser(
         description="Run MTEB STS + Probing evaluation on BottleneckAE or other sentence embedding model."
-    )
-
-    p.add_argument(
-        "--config",
-        action="append",
-        default=None,
-        help="YAML config file for BottleneckAE (repeatable; later files override earlier ones).",
     )
 
     p.add_argument(
@@ -110,13 +103,9 @@ def parse_args():
 
 def main():
     args = parse_args()
-
-    if not args.config:
-        raise SystemExit("--config is required")
     
-    config_paths = args.config
-    cfg = merge_bottleneck_configs(*config_paths)
     model_name = "sentence-transformers/nli-bert-base"
+    max_length = 16
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -125,7 +114,7 @@ def main():
         model,
         tokenizer=tokenizer,
         device=args.device,
-        max_length=cfg.model.max_length,
+        max_length=max_length,
     )
 
     # ---------------- MTEB tasks & evaluation ----------------

@@ -1,0 +1,19 @@
+# FineWeb sample-10BT: preprocess with GPT-2 token chunking.
+# Run prepare_dataset.py first; then set data.preprocessed_dir in train config.
+# To use paragraph split instead, set preprocess_mode: paragraphs and remove chunk_size_tokens.
+data:
+  dataset_name: HuggingFaceFW/fineweb
+  dataset_config: sample-10BT
+  text_column: text
+  preprocess_mode: chunks
+  chunk_size_tokens: 64           # only for preprocess_mode: chunks
+  drop_incomplete_chunks: true    # only for preprocess_mode: chunks
+  gpt2_tokenizer_name: gpt2       # only for preprocess_mode: chunks
+  max_samples: null
+  num_train_samples: null
+  num_val_samples: 100000
+  seed: 42
+  cache_dir: /home/okashurin/okashurin/datasets/
+  preprocessed_dir: /home/okashurin/okashurin/datasets/fineweb_10bt_ml_64
+  prepare_num_proc: 32
+  preprocess_batch_size: 20000

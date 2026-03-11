@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, TrainingArguments
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.utils.config import merge_bottleneck_configs
+from src.utils.config import load_bottleneck_config
 from src.data.datasets import load_text_dataset
 from src.data.collators import ARDecoderCollator
 from src.models.bottleneck_ae import build_bottleneck_model
@@ -24,15 +24,15 @@ from src.trainers import BottleneckTrainer, preprocess_logits_for_metrics
 def main():
     parser = argparse.ArgumentParser(description="Train Bottleneck autoencoder")
     parser.add_argument(
-        "--configs",
-        nargs="+",
+        "--config",
+        type=str,
         required=True,
-        help="One or more YAML config files (later overrides earlier)",
+        help="Path to a single YAML config containing model, train, and data sections",
     )
     args = parser.parse_args()
 
     # Load config
-    cfg = merge_bottleneck_configs(*args.configs)
+    cfg = load_bottleneck_config(args.config)
     print(f"=== Config ===\n{cfg}\n")
 
     # Tokenizer
