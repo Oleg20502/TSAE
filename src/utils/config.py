@@ -139,7 +139,8 @@ class BottleneckModelConfig:
     d_model: int = 256
     max_length: int = 128
     n_latent_tokens: int = 1
-
+    normalize_latent: bool = False
+    
     # Encoder
     encoder_layers: int = 4
     encoder_heads: int = 4

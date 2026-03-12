@@ -107,13 +107,14 @@ class BottleneckEncoder(nn.Module):
         max_length: int = 128,
         dropout: float = 0.1,
         pad_token_id: int = 0,
+        normalize_latent: bool = False,
     ):
         super().__init__()
         self.d_model = d_model
         self.n_latent_tokens = n_latent_tokens
         self.max_length = max_length
         self.pad_token_id = pad_token_id
-
+        
         # Token + positional embeddings (encoder's own)
         self.tok_emb = nn.Embedding(vocab_size, d_model, padding_idx=pad_token_id)
         self.pos_emb = nn.Embedding(max_length, d_model)
@@ -127,7 +128,7 @@ class BottleneckEncoder(nn.Module):
             [BottleneckEncoderBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
         )
 
-        self.ln_f = nn.LayerNorm(d_model)
+        self.ln_f = nn.LayerNorm(d_model, elementwise_affine=not normalize_latent)
 
         self._init_weights()
 

@@ -229,6 +229,7 @@ def build_bottleneck_model(
         max_length=mc.max_length,
         dropout=mc.encoder_dropout,
         pad_token_id=pad_token_id,
+        normalize_latent=mc.normalize_latent,
     )
 
     if mc.decoder_type == "autoregressive":
@@ -259,6 +260,7 @@ def build_bottleneck_model(
     latent_aug = LatentAugmentation(
         noise_std=mc.noise_std,
         feature_dropout_p=mc.feature_dropout_p,
+        normalize_latent=mc.normalize_latent,
     )
 
     model = BottleneckAE(

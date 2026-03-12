@@ -1,7 +1,5 @@
 """Latent augmentation: noise injection and feature dropout for robustness."""
 
-from __future__ import annotations
-
 import math
 
 import torch
@@ -30,16 +28,17 @@ class LatentAugmentation(nn.Module):
         self,
         noise_std: float = 0.0,
         feature_dropout_p: float = 0.0,
+        normalize_latent: bool = False,
     ):
         super().__init__()
         self.noise_std = noise_std
         self.feature_dropout_p = feature_dropout_p
-        self.signal_norm = math.sqrt(1 - self.noise_std**2)
-
+        self.normalize_latent = normalize_latent
+        
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            z: (B, L, D) latent tensor (typically L=1 for the bottleneck AE).
+            z: (B, L, D) latent tensor
 
         Returns:
             Augmented latent tensor of the same shape.
@@ -49,10 +48,13 @@ class LatentAugmentation(nn.Module):
 
         # 1) Gaussian noise
         if self.noise_std > 0.0:
-            z = self.signal_norm * z + self.noise_std * torch.randn_like(z)
+            z = z + self.noise_std * torch.randn_like(z)
 
         # 2) Feature dropout (drop individual dimensions)
         if self.feature_dropout_p > 0.0:
             z = F.dropout(z, p=self.feature_dropout_p, training=True)
+
+        if self.normalize_latent:
+            z = F.normalize(z, p=2, dim=-1)
 
         return z
