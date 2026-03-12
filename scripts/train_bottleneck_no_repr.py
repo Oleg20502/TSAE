@@ -42,6 +42,7 @@ def build_rae_model(
         max_length=mc.max_length,
         dropout=mc.encoder_dropout,
         pad_token_id=pad_token_id,
+        normalize_latent=mc.normalize_latent,
     )
 
     decoder = AutoRegressiveDecoder(
