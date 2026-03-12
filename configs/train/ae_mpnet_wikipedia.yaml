@@ -1,10 +1,9 @@
 # Full experiment config: MPNet backbone + Wikipedia prepared data
-# Run: scripts/train_bottleneck.py --config configs/experiments/bottleneck_mpnet_wikipedia.yaml
+# Run: scripts/train_bottleneck.py --config configs/train/ae_mpnet_wikipedia.yaml
 
 model:
   backbone_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
-  d_latent: 768
   d_model: 768
   n_latent_tokens: 2
   max_length: 16

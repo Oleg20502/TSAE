@@ -1,10 +1,6 @@
-# Full experiment config: NLI-BERT backbone + FineWeb 10BT
-# Run: scripts/train_bottleneck.py --config configs/experiments/bottleneck_bert_fineweb_10bt.yaml
-
 model:
   backbone_name: "sentence-transformers/nli-bert-base"
   freeze_repr: true
-  d_latent: 768
   d_model: 768
   n_latent_tokens: 2
   max_length: 16
@@ -41,7 +37,6 @@ train:
 
 data:
   preprocessed_dir: /home/okashurin/okashurin/datasets/fineweb_10bt_chunks
-  max_length: 16
   num_train_samples: null
   num_val_samples: null
   seed: 42

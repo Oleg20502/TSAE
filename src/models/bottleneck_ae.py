@@ -7,10 +7,10 @@ import torch.nn as nn
 from transformers import AutoTokenizer
 
 from src.backbones.repr_embedder import BaseTextReprEncoder, STReprEncoder, CLSReprEncoder
-from src.models.bottleneck_encoder import BottleneckEncoder
+from src.models.encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
 from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
-from src.utils.config import BottleneckExperimentConfig, load_bottleneck_config_from_paths
+from src.utils.config import BottleneckExperimentConfig, load_config_from_paths
 from src.losses.reconstruction import reconstruction_loss
 from src.losses.semantic import semantic_consistency_loss
 
@@ -52,7 +52,7 @@ class BottleneckAE(nn.Module):
 
         # Semantic projection: latent -> repr_encoder sentence dim
         if self.repr_encoder:
-            self.sem_proj = nn.Linear(encoder.d_latent, repr_encoder.sent_dim)
+            self.sem_proj = nn.Linear(encoder.d_model, repr_encoder.sent_dim)
 
         # Freeze the representation backbone
         if freeze_repr and self.repr_encoder:
@@ -120,7 +120,7 @@ class BottleneckAE(nn.Module):
         z_aug = self.latent_aug(z)
 
         # Decode
-        logits, _dec_hidden = self.decoder(
+        logits = self.decoder(
             latent_tokens=z_aug,
             decoder_input_ids=decoder_input_ids,
             decoder_attention_mask=decoder_attention_mask,
@@ -222,7 +222,6 @@ def build_bottleneck_model(
     encoder = BottleneckEncoder(
         vocab_size=vocab_size,
         d_model=mc.d_model,
-        d_latent=mc.d_latent,
         n_latent_tokens=mc.n_latent_tokens,
         n_layers=mc.encoder_layers,
         n_heads=mc.encoder_heads,
@@ -230,6 +229,7 @@ def build_bottleneck_model(
         max_length=mc.max_length,
         dropout=mc.encoder_dropout,
         pad_token_id=pad_token_id,
+        normalize_latent=mc.normalize_latent,
     )
 
     if mc.decoder_type == "autoregressive":
@@ -260,6 +260,7 @@ def build_bottleneck_model(
     latent_aug = LatentAugmentation(
         noise_std=mc.noise_std,
         feature_dropout_p=mc.feature_dropout_p,
+        normalize_latent=mc.normalize_latent,
     )
 
     model = BottleneckAE(
@@ -281,7 +282,7 @@ def load_bottleneck_model(
     use_legacy_repr: bool = False
 ):
     """Rebuild BottleneckAE from YAML config(s) and load HF Trainer checkpoint."""
-    cfg = load_bottleneck_config_from_paths(config_paths)
+    cfg = load_config_from_paths(config_paths)
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
     vocab_size = tokenizer.vocab_size
     pad_token_id = tokenizer.pad_token_id or 0

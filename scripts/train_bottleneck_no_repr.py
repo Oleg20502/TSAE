@@ -10,8 +10,8 @@ from transformers import AutoTokenizer, TrainingArguments
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.utils.config import load_bottleneck_config, BottleneckExperimentConfig
-from src.models.bottleneck_encoder import BottleneckEncoder
+from src.utils.config import load_config, save_config, BottleneckExperimentConfig
+from src.models.encoder import BottleneckEncoder
 from src.models.decoder import AutoRegressiveDecoder
 from src.models.bottleneck_ae import BottleneckAE
 from src.data.datasets import load_text_dataset
@@ -35,7 +35,6 @@ def build_rae_model(
     encoder = BottleneckEncoder(
         vocab_size=vocab_size,
         d_model=mc.d_model,
-        d_latent=mc.d_latent,
         n_latent_tokens=mc.n_latent_tokens,
         n_layers=mc.encoder_layers,
         n_heads=mc.encoder_heads,
@@ -43,6 +42,7 @@ def build_rae_model(
         max_length=mc.max_length,
         dropout=mc.encoder_dropout,
         pad_token_id=pad_token_id,
+        normalize_latent=mc.normalize_latent,
     )
 
     decoder = AutoRegressiveDecoder(
@@ -83,8 +83,13 @@ def main():
     args = parser.parse_args()
 
     # Load config
-    cfg = load_bottleneck_config(args.config)
+    cfg = load_config(args.config)
     print(f"=== Config ===\n{cfg}\n")
+
+    # Save all hyperparameters to output_dir
+    tc = cfg.train
+    Path(tc.output_dir).mkdir(parents=True, exist_ok=True)
+    save_config(cfg, Path(tc.output_dir) / "config.yaml")
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
@@ -99,10 +104,9 @@ def main():
 
     # Data
     datasets = load_text_dataset(cfg.data)
-    collator = ARDecoderCollator.from_data_config(tokenizer, cfg.data)
+    collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
 
     # Training arguments
-    tc = cfg.train
     training_args = TrainingArguments(
         output_dir=tc.output_dir,
         num_train_epochs=tc.epochs,
