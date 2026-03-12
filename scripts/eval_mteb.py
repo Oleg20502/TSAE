@@ -39,6 +39,8 @@ from src.backbones.repr_embedder import STReprEncoder
 from src.models.bottleneck_ae import BottleneckAE, load_bottleneck_model
 
 
+TASK_TYPES = ["STS", "Classification"]
+
 # ---------------------------------------------------------------------
 # MTEB v2 encoder wrapper (implements AbsEncoder protocol)
 # ---------------------------------------------------------------------
@@ -102,6 +104,13 @@ class EncoderWrapper(AbsEncoder):
 def parse_args():
     p = argparse.ArgumentParser(
         description="Run MTEB STS + Probing evaluation on BottleneckAE or other sentence embedding model."
+    )
+
+    p.add_argument(
+        "--task-type",
+        choices=TASK_TYPES,
+        default="STS",
+        help="MTEB task type to evaluate.",
     )
 
     p.add_argument(
@@ -203,10 +212,31 @@ def main():
 
 
     # ---------------- MTEB tasks & evaluation ----------------
-    print(f"Loading MTEB tasks (STS + Probing) ...")
-    tasks = mteb.get_tasks(task_types=["STS", "Probing"], languages=["eng"])
+    print(f"Loading MTEB tasks ({args.task_type}) ...")
 
-    print(f"Running MTEB evaluation for model: {model_name}")
+    if args.task_type == "STS":
+        tasks = mteb.get_tasks(
+            task_types=["STS"],
+            languages=["eng"]
+        )
+    elif args.task_type == "Classification":
+        tasks = mteb.get_tasks(
+            tasks=[
+                "Banking77Classification.v2",
+                "HUMETweetSentimentExtractionClassification",
+                "PoemSentimentClassification.v2",
+                "ToxicChatClassification.v2",
+                "MassiveIntentClassification",
+                "MassiveScenarioClassification",
+                "TweetSentimentExtractionClassification.v2",
+                "MultiHateClassification",
+            ],
+            languages=["eng"]
+        )
+    else:
+        raise ValueError(f"Invalid task type: {args.task_type}")
+
+    print(f"Running evaluation for model: {model_name}")
     result = mteb.evaluate(
         wrapped_model,
         tasks=tasks,
@@ -219,7 +249,8 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for task_result in result.task_results:
-        out_path = output_dir / f"{task_result.task_name}.json"
+        out_path = output_dir / f"{args.task_type} / {task_result.task_name}.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(task_result.model_dump_json(indent=2))
         print(f"  {task_result.task_name}: saved to {out_path}")
 
@@ -235,7 +266,8 @@ def main():
     }
 
     summary = {"tasks": per_task, "aggregate": aggregate}
-    summary_path = output_dir / "_summary.json"
+    summary_path = output_dir / f"{args.task_type} / summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
