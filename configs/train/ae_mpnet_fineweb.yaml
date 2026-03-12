@@ -27,6 +27,7 @@ train:
   output_dir: outputs/vavae_mpnet_nl_1_std_0.2_sl_10
   lr: 1.0e-4
   weight_decay: 0.01
+  ema_decay: 0.999
   epochs: 100
   warmup_steps: 1000
   batch_size: 32

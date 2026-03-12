@@ -103,6 +103,7 @@ class TrainConfig:
     save_total_limit: int = 3
 
     # Misc
+    ema_decay: float = 0.999
     fp16: bool = False
     bf16: bool = False
     dataloader_num_workers: int = 4
