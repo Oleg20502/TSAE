@@ -1,31 +1,37 @@
-# Full experiment config: MPNet backbone + Wikipedia prepared data
-# Run: scripts/train_bottleneck.py --config configs/train/ae_mpnet_wikipedia.yaml
-
 model:
   backbone_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
+  
+  n_latent_tokens: 4
   d_model: 768
-  n_latent_tokens: 2
   max_length: 16
+  noise_std: 0.2
+  sigma_type: "abs"
+  feature_dropout_p: 0.0
+  lambda_sem: 10
+  normalize_latent: False
+
+  # encoder
   encoder_layers: 6
   encoder_heads: 12
   encoder_ff_dim: 3072
   encoder_dropout: 0.1
+  
+  # decoder
+  decoder_type: "autoregressive"
   decoder_layers: 6
   decoder_heads: 12
   decoder_ff_dim: 3072
   decoder_dropout: 0.1
-  noise_std: 0.2
-  feature_dropout_p: 0.0
-  lambda_sem: 10
 
 train:
-  output_dir: outputs/vavae_mpnet_nl_2_std_0.2_sl_10
+  output_dir: outputs/vavae_mpnet_nl_4_std_0.2_sl_10
   lr: 1.0e-4
   weight_decay: 0.01
+  ema_decay: 0.999
   epochs: 100
   warmup_steps: 1000
-  batch_size: 32
+  batch_size: 128
   gradient_accumulation_steps: 4
   max_grad_norm: 1.0
   logging_steps: 100
@@ -39,7 +45,7 @@ train:
   report_to: tensorboard
 
 data:
-  preprocessed_dir: data/wiki_prepared
-  num_train_samples: 100000
-  num_val_samples: 2000
+  preprocessed_dir: /home/okashurin/okashurin/datasets/fineweb_10bt_chunks
+  num_train_samples: null
+  num_val_samples: null
   seed: 42
