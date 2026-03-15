@@ -42,39 +42,6 @@ class DataConfig:
 
 
 # ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ModelConfig:
-    """Configuration for the RAE-text model."""
-
-    # Backbone
-    backbone_name: str = "princeton-nlp/sup-simcse-bert-base-uncased"
-    freeze_repr: bool = True
-
-    # Latent dimensions
-    d_sem: int = 256
-    d_det: int = 256
-    n_detail_tokens: int = 8
-
-    # Detail encoder
-    detail_encoder_layers: int = 2
-    detail_encoder_heads: int = 4
-
-    # Decoder
-    decoder_layers: int = 4
-    decoder_heads: int = 4
-    decoder_dim: int = 256
-    decoder_ff_dim: int = 512
-    decoder_dropout: float = 0.1
-    max_decoder_length: int = 128
-
-    # Loss weights
-    lambda_sem: float = 0.2
-
-
-# ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
@@ -157,6 +124,7 @@ class BottleneckModelConfig:
 
     # Latent augmentation
     noise_std: float = 0.0
+    sigma_type: str = "abs" # "abs" or "rel" (absolute or relative to the norm of the latent)
     feature_dropout_p: float = 0.0
 
     # Loss weights
@@ -166,15 +134,6 @@ class BottleneckModelConfig:
 # ---------------------------------------------------------------------------
 # Top-level configs
 # ---------------------------------------------------------------------------
-
-@dataclass
-class ExperimentConfig:
-    """Top-level config aggregating all sub-configs (RAE-text)."""
-
-    data: DataConfig = field(default_factory=DataConfig)
-    model: ModelConfig = field(default_factory=ModelConfig)
-    train: TrainConfig = field(default_factory=TrainConfig)
-    eval: EvalConfig = field(default_factory=EvalConfig)
 
 
 @dataclass
@@ -200,31 +159,10 @@ def load_yaml(path: str | Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def load_config(path: str | Path) -> ExperimentConfig:
-    """Load an ExperimentConfig from a YAML file."""
-    raw = load_yaml(path)
-    return from_dict(data_class=ExperimentConfig, data=raw, config=_DACITE_CFG)
-
-
 def load_config(path: str | Path) -> BottleneckExperimentConfig:
     """Load a BottleneckExperimentConfig from a YAML file."""
     raw = load_yaml(path)
     return from_dict(data_class=BottleneckExperimentConfig, data=raw, config=_DACITE_CFG)
-
-
-def merge_configs(*paths: str | Path) -> ExperimentConfig:
-    """Load and merge multiple YAML files (later files override earlier)."""
-    merged: dict = {}
-    for p in paths:
-        raw = load_yaml(p)
-        for section, values in raw.items():
-            if section not in merged:
-                merged[section] = {}
-            if isinstance(values, dict):
-                merged[section].update(values)
-            else:
-                merged[section] = values
-    return from_dict(data_class=ExperimentConfig, data=merged, config=_DACITE_CFG)
 
 
 def merge_bottleneck_configs(*paths: str | Path) -> BottleneckExperimentConfig:

@@ -261,6 +261,7 @@ def build_bottleneck_model(
         noise_std=mc.noise_std,
         feature_dropout_p=mc.feature_dropout_p,
         normalize_latent=mc.normalize_latent,
+        sigma_type=mc.sigma_type,
     )
 
     model = BottleneckAE(

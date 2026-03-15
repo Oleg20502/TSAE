@@ -6,6 +6,7 @@ model:
   d_model: 768
   max_length: 16
   noise_std: 0.2
+  sigma_type: "abs"
   feature_dropout_p: 0.0
   lambda_sem: 10
   normalize_latent: False
