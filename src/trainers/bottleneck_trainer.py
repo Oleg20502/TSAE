@@ -8,6 +8,22 @@ from torch_ema import ExponentialMovingAverage
 from transformers import Trainer
 
 
+def _state_dict_no_shared_duplicates(state_dict):
+    """Drop keys that reference the same tensor storage as an earlier key (safetensors forbids duplicates)."""
+    seen_ptr = {}
+    out = {}
+    for k, v in state_dict.items():
+        if not isinstance(v, torch.Tensor):
+            out[k] = v
+            continue
+        ptr = v.data_ptr()
+        if ptr in seen_ptr:
+            continue
+        seen_ptr[ptr] = k
+        out[k] = v
+    return out
+
+
 # ---------------------------------------------------------------------------
 # For fast handling of logits using gpu
 # ---------------------------------------------------------------------------
@@ -133,6 +149,13 @@ class BottleneckTrainer(Trainer):
             output.metrics[f"{metric_key_prefix}_perplexity"] = math.exp(output.metrics[loss_key])
 
         return output
+
+    def _save(self, output_dir=None, state_dict=None):
+        # Avoid safetensors error when decoder.lm_head.weight and decoder.tok_emb.weight are tied
+        if state_dict is None:
+            state_dict = self.model.state_dict()
+        state_dict = _state_dict_no_shared_duplicates(state_dict)
+        super()._save(output_dir=output_dir, state_dict=state_dict)
 
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
         # Save EMA weights if present
