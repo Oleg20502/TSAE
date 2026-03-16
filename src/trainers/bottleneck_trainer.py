@@ -1,174 +1,470 @@
-"""Bottleneck AE Trainer: logs l_recon and l_sem for train and validation."""
+"""Lightweight custom trainer for the Bottleneck autoencoder using Accelerate."""
 
 import math
-from typing import Optional
+import os
+import shutil
+from dataclasses import asdict
+from types import SimpleNamespace
+from typing import Callable, Dict, List, Optional
 
+import numpy as np
 import torch
+import torch.nn as nn
+from accelerate import Accelerator
+from safetensors.torch import save_file
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
 from torch_ema import ExponentialMovingAverage
-from transformers import Trainer
+from transformers import get_constant_schedule_with_warmup
 
-
-def _state_dict_no_shared_duplicates(state_dict):
-    """Drop keys that reference the same tensor storage as an earlier key (safetensors forbids duplicates)."""
-    seen_ptr = {}
-    out = {}
-    for k, v in state_dict.items():
-        if not isinstance(v, torch.Tensor):
-            out[k] = v
-            continue
-        ptr = v.data_ptr()
-        if ptr in seen_ptr:
-            continue
-        seen_ptr[ptr] = k
-        out[k] = v
-    return out
+from src.losses.reconstruction import reconstruction_loss
+from src.losses.semantic import semantic_consistency_loss
+from src.utils.config import TrainConfig
 
 
 # ---------------------------------------------------------------------------
-# For fast handling of logits using gpu
+# Trainable module (excludes repr_encoder)
 # ---------------------------------------------------------------------------
-def preprocess_logits_for_metrics(logits, labels):
-    pred_ids = torch.argmax(logits[0], dim=-1)
-    return pred_ids
 
+class _TrainableCore(nn.Module):
+    """Training-time module: encoder + decoder + latent_aug + sem_proj.
 
-class BottleneckTrainer(Trainer):
-    """Trainer that logs l_recon and l_sem from the model output.
-
-    Logs train_l_recon / train_l_sem at logging steps. During evaluation,
-    accumulates l_recon and l_sem in the same pass as eval_loss and adds
-    eval_l_recon / eval_l_sem to the metrics (no second eval pass).
+    repr_encoder is intentionally absent: it is frozen, contributes no
+    gradients, and must not be saved to checkpoints.
     """
 
-    def __init__(self, *args, ema_decay: Optional[float] = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._ema: Optional[ExponentialMovingAverage] = None
-        if ema_decay is not None and ema_decay > 0.0:
-            # Track all trainable parameters
-            params = [p for p in self.model.parameters() if p.requires_grad]
-            if params:
-                self._ema = ExponentialMovingAverage(params, decay=ema_decay)
-
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        outputs = model(**inputs)
-        loss = outputs["loss"]
-
-        if model.training:
-            # Cache component losses for the *next* optimizer step.
-            # During gradient accumulation, compute_loss is called multiple times
-            # while global_step is still the previous optimizer step.
-            step_key = int(self.state.global_step) + 1
-            if not hasattr(self, "_train_component_loss_cache"):
-                self._train_component_loss_cache = {}
-            slot = self._train_component_loss_cache.setdefault(
-                step_key,
-                {
-                    "l_recon_sum": 0.0,
-                    "l_recon_n": 0,
-                    "l_sem_sum": 0.0,
-                    "l_sem_n": 0,
-                },
-            )
-            if "l_recon" in outputs:
-                slot["l_recon_sum"] += outputs["l_recon"].item()
-                slot["l_recon_n"] += 1
-            if "l_sem" in outputs:
-                slot["l_sem_sum"] += outputs["l_sem"].item()
-                slot["l_sem_n"] += 1
-        else:
-            # Eval: accumulate for mean over validation set
-            if not hasattr(self, "_eval_recon_sum"):
-                self._eval_recon_sum = 0.0
-                self._eval_sem_sum = 0.0
-                self._eval_n = 0
-            if "l_recon" in outputs:
-                self._eval_recon_sum += outputs["l_recon"].item()
-            if "l_sem" in outputs:
-                self._eval_sem_sum += outputs["l_sem"].item()
-            self._eval_n += 1
-
-        if return_outputs:
-            return (loss, outputs)
-        return loss
-
-    def optimizer_step(
+    def __init__(
         self,
-        *args,
-        **kwargs,
+        encoder: nn.Module,
+        decoder: nn.Module,
+        latent_aug: nn.Module,
+        sem_proj: Optional[nn.Linear],
+        lambda_sem: float,
     ):
-        super().optimizer_step(*args, **kwargs)
-        if self._ema is not None:
-            self._ema.update()
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.latent_aug = latent_aug
+        self.sem_proj = sem_proj
+        self.lambda_sem = lambda_sem
 
-    def log(self, logs, start_time=None):
-        # Merge component losses into the main training log line so everything
-        # (loss, grad_norm, lr, train_l_*) is emitted together.
-        merged_logs = dict(logs)
-        if "loss" in merged_logs and not any(k.startswith("eval_") for k in merged_logs):
-            # Trainer accumulates loss as sum over micro-batches; report mean per step.
-            merged_logs["loss"] = merged_logs["loss"] / self.args.gradient_accumulation_steps
-            cache = getattr(self, "_train_component_loss_cache", None)
-            if cache is not None:
-                step_key = int(self.state.global_step)
-                slot = cache.pop(step_key, None)
-                if slot is not None:
-                    if slot["l_recon_n"] > 0:
-                        merged_logs["train_l_recon"] = slot["l_recon_sum"] / slot["l_recon_n"]
-                    if slot["l_sem_n"] > 0:
-                        merged_logs["train_l_sem"] = slot["l_sem_sum"] / slot["l_sem_n"]
-        return super().log(merged_logs, start_time=start_time)
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        decoder_input_ids: torch.Tensor,
+        labels: torch.Tensor,
+        decoder_attention_mask: Optional[torch.Tensor] = None,
+        sent_emb: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Encode → augment → decode → compute loss.
 
-    def evaluation_loop(self, dataloader, description, prediction_loss_only=None, ignore_keys=None, metric_key_prefix: str = "eval"):
-        # Reset accumulators before the eval pass
-        self._eval_recon_sum = 0.0
-        self._eval_sem_sum = 0.0
-        self._eval_n = 0
+        Args:
+            sent_emb: pre-computed sentence embedding from repr_encoder (detached).
+                      When None the semantic loss term is skipped.
+        """
+        z = self.encoder(input_ids, attention_mask)       # (B, L, D)
+        z_aug = self.latent_aug(z)                        # no-op during eval
 
-        # Use EMA weights during evaluation if available
+        logits = self.decoder(
+            latent_tokens=z_aug,
+            decoder_input_ids=decoder_input_ids,
+            decoder_attention_mask=decoder_attention_mask,
+        )
+
+        l_recon = reconstruction_loss(logits, labels)
+
+        if sent_emb is not None and self.sem_proj is not None:
+            z_sem = self.sem_proj(z.mean(dim=1))          # (B, D_s)
+            l_sem = semantic_consistency_loss(z_sem, sent_emb)
+            loss = l_recon + self.lambda_sem * l_sem
+            return {
+                "loss": loss,
+                "logits": logits,
+                "l_recon": l_recon.detach(),
+                "l_sem": l_sem.detach(),
+            }
+        else:
+            return {
+                "loss": l_recon,
+                "logits": logits,
+                "l_recon": l_recon.detach(),
+            }
+
+
+# ---------------------------------------------------------------------------
+# Trainer
+# ---------------------------------------------------------------------------
+
+class BottleneckTrainer:
+    """Lightweight Accelerate-based trainer for the Bottleneck autoencoder.
+
+    Takes encoder, decoder, and repr_encoder as separate arguments.
+    repr_encoder is used only to produce frozen semantic targets; it is
+    never wrapped by Accelerate, never optimized, and never saved.
+    """
+
+    def __init__(
+        self,
+        encoder: nn.Module,
+        decoder: nn.Module,
+        repr_encoder: Optional[nn.Module],
+        latent_aug: nn.Module,
+        lambda_sem: float,
+        train_dataset,
+        eval_dataset,
+        data_collator,
+        train_config: TrainConfig,
+        compute_metrics: Optional[Callable] = None,
+    ):
+        self.cfg = train_config
+        self.compute_metrics_fn = compute_metrics
+
+        # sem_proj lives here: it knows encoder dim and repr dim, both training-only
+        sem_proj: Optional[nn.Linear] = None
+        if repr_encoder is not None:
+            sem_proj = nn.Linear(encoder.d_model, repr_encoder.sent_dim)
+
+        self._core = _TrainableCore(encoder, decoder, latent_aug, sem_proj, lambda_sem)
+
+        # repr_encoder is kept separate — frozen, on device, excluded from saves
+        self._repr_encoder = repr_encoder
+
+        # ------------------------------------------------------------------
+        # Accelerator
+        # ------------------------------------------------------------------
+        mixed_precision = (
+            "fp16" if train_config.fp16 else ("bf16" if train_config.bf16 else "no")
+        )
+        log_with = (
+            train_config.report_to
+            if train_config.report_to not in ("none", "no", "", None)
+            else None
+        )
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=train_config.gradient_accumulation_steps,
+            mixed_precision=mixed_precision,
+            log_with=log_with,
+            project_dir=train_config.output_dir,
+        )
+
+        # ------------------------------------------------------------------
+        # Optimizer, dataloaders, scheduler
+        # ------------------------------------------------------------------
+        optimizer = AdamW(
+            self._core.parameters(),
+            lr=train_config.lr,
+            weight_decay=train_config.weight_decay,
+        )
+
+        train_dl = DataLoader(
+            train_dataset,
+            batch_size=train_config.batch_size,
+            collate_fn=data_collator,
+            num_workers=train_config.dataloader_num_workers,
+            shuffle=True,
+        )
+        eval_dl = DataLoader(
+            eval_dataset,
+            batch_size=train_config.batch_size,
+            collate_fn=data_collator,
+            num_workers=train_config.dataloader_num_workers,
+        )
+
+        scheduler = get_constant_schedule_with_warmup(
+            optimizer, num_warmup_steps=train_config.warmup_steps
+        )
+
+        # Accelerate wraps core, optimizer, dataloaders, scheduler — NOT repr_encoder
+        (
+            self._core,
+            self._optimizer,
+            self._train_dl,
+            self._eval_dl,
+            self._scheduler,
+        ) = self.accelerator.prepare(self._core, optimizer, train_dl, eval_dl, scheduler)
+
+        # Move repr_encoder to the same device but keep it outside Accelerate
+        if self._repr_encoder is not None:
+            self._repr_encoder = self._repr_encoder.to(self.accelerator.device)
+            self._repr_encoder.eval()
+            for p in self._repr_encoder.parameters():
+                p.requires_grad = False
+
+        # ------------------------------------------------------------------
+        # EMA
+        # ------------------------------------------------------------------
+        self._ema: Optional[ExponentialMovingAverage] = None
+        if train_config.ema_decay and train_config.ema_decay > 0.0:
+            params = [p for p in self._core.parameters() if p.requires_grad]
+            if params:
+                self._ema = ExponentialMovingAverage(params, decay=train_config.ema_decay)
+
+        self._saved_checkpoints: List[str] = []
+
+    # ------------------------------------------------------------------
+    # Forward helpers
+    # ------------------------------------------------------------------
+
+    def _get_sent_emb(self, batch: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+        """Run the frozen repr_encoder to get sentence embeddings (no_grad)."""
+        if self._repr_encoder is None:
+            return None
+        with torch.no_grad():
+            return self._repr_encoder.encode(batch["input_ids"], batch["attention_mask"])
+
+    def _forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        sent_emb = self._get_sent_emb(batch)
+        return self._core(
+            input_ids=batch["input_ids"],
+            attention_mask=batch["attention_mask"],
+            decoder_input_ids=batch["decoder_input_ids"],
+            labels=batch["labels"],
+            decoder_attention_mask=batch.get("decoder_attention_mask"),
+            sent_emb=sent_emb,
+        )
+
+    # ------------------------------------------------------------------
+    # Training loop
+    # ------------------------------------------------------------------
+
+    def train(self):
+        cfg = self.cfg
+        self.accelerator.init_trackers("bottleneck_ae", config=asdict(cfg))
+
+        global_step = 0
+        log_loss_sum = log_l_recon_sum = log_l_sem_sum = 0.0
+        log_micro_steps = 0
+
+        for epoch in range(cfg.epochs):
+            self._core.train()
+
+            for batch in self._train_dl:
+                with self.accelerator.accumulate(self._core):
+                    outputs = self._forward(batch)
+                    loss = outputs["loss"]
+                    self.accelerator.backward(loss)
+
+                    if self.accelerator.sync_gradients:
+                        self.accelerator.clip_grad_norm_(
+                            self._core.parameters(), cfg.max_grad_norm
+                        )
+
+                    self._optimizer.step()
+                    self._scheduler.step()
+                    self._optimizer.zero_grad()
+
+                # Accumulate logging values at micro-step granularity
+                log_loss_sum += loss.detach().item()
+                log_l_recon_sum += outputs["l_recon"].item()
+                if "l_sem" in outputs:
+                    log_l_sem_sum += outputs["l_sem"].item()
+                log_micro_steps += 1
+
+                if self.accelerator.sync_gradients:
+                    if self._ema is not None:
+                        self._ema.update()
+                    global_step += 1
+
+                    if global_step % cfg.logging_steps == 0:
+                        self._log_train(
+                            global_step, epoch,
+                            log_loss_sum, log_l_recon_sum, log_l_sem_sum, log_micro_steps,
+                        )
+                        log_loss_sum = log_l_recon_sum = log_l_sem_sum = 0.0
+                        log_micro_steps = 0
+
+                    if global_step % cfg.eval_steps == 0:
+                        self.evaluate(step=global_step)
+                        self._core.train()
+
+                    if global_step % cfg.save_steps == 0:
+                        ckpt_dir = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
+                        self.save_checkpoint(ckpt_dir)
+                        self._rotate_checkpoints()
+
+        self.accelerator.end_training()
+
+    def _log_train(
+        self,
+        step: int,
+        epoch: int,
+        loss_sum: float,
+        l_recon_sum: float,
+        l_sem_sum: float,
+        n: int,
+    ):
+        n = max(n, 1)
+        log_dict = {
+            "train/loss": loss_sum / n,
+            "train/l_recon": l_recon_sum / n,
+            "train/lr": self._scheduler.get_last_lr()[0],
+            "epoch": epoch,
+        }
+        if self._repr_encoder is not None:
+            log_dict["train/l_sem"] = l_sem_sum / n
+
+        self.accelerator.log(log_dict, step=step)
+
+        if self.accelerator.is_main_process:
+            sem_str = f"  l_sem={l_sem_sum/n:.4f}" if self._repr_encoder else ""
+            print(
+                f"step={step}  loss={loss_sum/n:.4f}"
+                f"  l_recon={l_recon_sum/n:.4f}{sem_str}"
+                f"  lr={self._scheduler.get_last_lr()[0]:.2e}"
+            )
+
+    # ------------------------------------------------------------------
+    # Evaluation loop
+    # ------------------------------------------------------------------
+
+    def evaluate(self, step: Optional[int] = None) -> Dict[str, float]:
+        self._core.eval()
+
         if self._ema is not None:
             self._ema.store()
             self._ema.copy_to()
 
-        output = super().evaluation_loop(
-            dataloader=dataloader,
-            description=description,
-            prediction_loss_only=prediction_loss_only,
-            ignore_keys=ignore_keys,
-            metric_key_prefix=metric_key_prefix,
-        )
+        # Tensor accumulators (allows correct all-reduce across GPUs)
+        device = self.accelerator.device
+        loss_acc = torch.zeros(1, device=device)
+        l_recon_acc = torch.zeros(1, device=device)
+        l_sem_acc = torch.zeros(1, device=device)
+        count = torch.zeros(1, device=device)
 
-        if self._ema is not None:
-            self._ema.restore()
+        all_preds: List[np.ndarray] = []
+        all_labels: List[np.ndarray] = []
 
-        # Add component losses and perplexity so they are included when evaluate() logs
-        if self._eval_n > 0:
-            output.metrics[f"{metric_key_prefix}_l_recon"] = self._eval_recon_sum / self._eval_n
-            output.metrics[f"{metric_key_prefix}_l_sem"] = self._eval_sem_sum / self._eval_n
-        loss_key = f"{metric_key_prefix}_loss"
-        if loss_key in output.metrics:
-            output.metrics[f"{metric_key_prefix}_perplexity"] = math.exp(output.metrics[loss_key])
-
-        return output
-
-    def _save(self, output_dir=None, state_dict=None):
-        # Avoid safetensors error when decoder.lm_head.weight and decoder.tok_emb.weight are tied
-        if state_dict is None:
-            state_dict = self.model.state_dict()
-        state_dict = _state_dict_no_shared_duplicates(state_dict)
-        super()._save(output_dir=output_dir, state_dict=state_dict)
-
-    def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
-        # Save EMA weights if present
-        if self._ema is None:
-            return super().save_model(output_dir=output_dir, _internal_call=_internal_call)
-
-        self._ema.store()
-        self._ema.copy_to()
         try:
-            return super().save_model(output_dir=output_dir, _internal_call=_internal_call)
-        finally:
-            self._ema.restore()
+            for batch in self._eval_dl:
+                with torch.no_grad():
+                    outputs = self._forward(batch)
 
-    def save_non_ema_model(self, output_dir: Optional[str] = None):
-        """Save the raw (non-EMA) model weights for continued fine-tuning."""
-        return super().save_model(output_dir=output_dir, _internal_call=False)
+                loss_acc += outputs["loss"].detach()
+                l_recon_acc += outputs["l_recon"].detach()
+                if "l_sem" in outputs:
+                    l_sem_acc += outputs["l_sem"].detach()
+                count += 1
+
+                if self.compute_metrics_fn is not None:
+                    pred_ids = outputs["logits"].argmax(dim=-1)  # (B, T)
+                    pred_ids = self.accelerator.gather_for_metrics(pred_ids)
+                    labels = self.accelerator.gather_for_metrics(batch["labels"])
+                    if self.accelerator.is_main_process:
+                        all_preds.append(pred_ids.cpu().numpy())
+                        all_labels.append(labels.cpu().numpy())
+        finally:
+            if self._ema is not None:
+                self._ema.restore()
+
+        # Average across all processes
+        loss_acc = self.accelerator.reduce(loss_acc, reduction="sum")
+        l_recon_acc = self.accelerator.reduce(l_recon_acc, reduction="sum")
+        l_sem_acc = self.accelerator.reduce(l_sem_acc, reduction="sum")
+        count = self.accelerator.reduce(count, reduction="sum")
+
+        n = count.item()
+        eval_loss = (loss_acc / count).item()
+
+        metrics: Dict[str, float] = {
+            "eval/loss": eval_loss,
+            "eval/l_recon": (l_recon_acc / count).item(),
+            "eval/perplexity": math.exp(min(eval_loss, 20)),
+        }
+        if self._repr_encoder is not None:
+            metrics["eval/l_sem"] = (l_sem_acc / count).item()
+
+        if self.compute_metrics_fn is not None and self.accelerator.is_main_process and all_preds:
+            predictions = np.concatenate(all_preds, axis=0)
+            label_ids = np.concatenate(all_labels, axis=0)
+            ep = SimpleNamespace(predictions=predictions, label_ids=label_ids)
+            extra = self.compute_metrics_fn(ep)
+            metrics.update({f"eval/{k}": v for k, v in extra.items()})
+
+        self.accelerator.log(metrics, step=step)
+
+        if self.accelerator.is_main_process:
+            parts = "  ".join(f"{k}={v:.4f}" for k, v in metrics.items())
+            print(f"[eval step={step}]  {parts}")
+
+        return metrics
+
+    # ------------------------------------------------------------------
+    # Saving
+    # ------------------------------------------------------------------
+
+    def _build_state_dict(self) -> Dict[str, torch.Tensor]:
+        """Collect encoder + decoder + sem_proj weights.
+
+        repr_encoder is intentionally excluded.
+
+        The decoder's lm_head.weight is dropped when it is the same
+        storage as tok_emb.weight so safetensors does not raise a
+        duplicate-pointer error. load_bottleneck_model re-ties the
+        weights on load.
+        """
+        core = self.accelerator.unwrap_model(self._core)
+        sd: Dict[str, torch.Tensor] = {}
+
+        for k, v in core.encoder.state_dict().items():
+            sd[f"encoder.{k}"] = v
+
+        decoder_sd = core.decoder.state_dict()
+        if (
+            hasattr(core.decoder, "lm_head")
+            and hasattr(core.decoder, "tok_emb")
+            and core.decoder.lm_head.weight is core.decoder.tok_emb.weight
+        ):
+            del decoder_sd["lm_head.weight"]
+        for k, v in decoder_sd.items():
+            sd[f"decoder.{k}"] = v
+
+        if core.sem_proj is not None:
+            for k, v in core.sem_proj.state_dict().items():
+                sd[f"sem_proj.{k}"] = v
+
+        return sd
+
+    def save_checkpoint(self, output_dir: str, save_ema: bool = True):
+        """Save a checkpoint to output_dir/model.safetensors.
+
+        With save_ema=True (default) the EMA weights are written.
+        """
+        self.accelerator.wait_for_everyone()
+        if not self.accelerator.is_main_process:
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        if save_ema and self._ema is not None:
+            self._ema.store()
+            self._ema.copy_to()
+        try:
+            save_file(self._build_state_dict(), os.path.join(output_dir, "model.safetensors"))
+        finally:
+            if save_ema and self._ema is not None:
+                self._ema.restore()
+
+        self._saved_checkpoints.append(output_dir)
+
+    def save_model(self, output_dir: str, tokenizer=None):
+        """Save final model with EMA weights applied."""
+        self.save_checkpoint(output_dir, save_ema=True)
+        if tokenizer is not None and self.accelerator.is_main_process:
+            tokenizer.save_pretrained(output_dir)
+
+    def save_non_ema_model(self, output_dir: str, tokenizer=None):
+        """Save raw (non-EMA) weights for continued training."""
+        self.save_checkpoint(output_dir, save_ema=False)
+        if tokenizer is not None and self.accelerator.is_main_process:
+            tokenizer.save_pretrained(output_dir)
+
+    def _rotate_checkpoints(self):
+        """Remove the oldest checkpoint once save_total_limit is exceeded."""
+        limit = self.cfg.save_total_limit
+        if not limit or limit <= 0:
+            return
+        while len(self._saved_checkpoints) > limit:
+            oldest = self._saved_checkpoints.pop(0)
+            if self.accelerator.is_main_process and os.path.isdir(oldest):
+                shutil.rmtree(oldest)
