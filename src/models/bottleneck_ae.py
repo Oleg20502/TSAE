@@ -302,12 +302,15 @@ def load_bottleneck_model(
     else:
         state = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
-    missing, unexpected = model.load_state_dict(state, strict=True)
-    if missing or unexpected:
-        print("Warning: state_dict load issues.")
-        if missing:
-            print("  Missing keys:", missing)
-        if unexpected:
-            print("  Unexpected keys:", unexpected)
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if unexpected:
+        print("Warning: unexpected keys in checkpoint:", unexpected)
+    # Re-tie decoder lm_head to tok_emb when checkpoint omitted the duplicate (safetensors)
+    if missing and hasattr(model, "decoder") and hasattr(model.decoder, "lm_head") and hasattr(model.decoder, "tok_emb"):
+        if "decoder.lm_head.weight" in missing:
+            model.decoder.lm_head.weight = model.decoder.tok_emb.weight
+            missing = [k for k in missing if k != "decoder.lm_head.weight"]
+    if missing:
+        print("Warning: missing keys (not loaded):", missing)
 
     return model, tokenizer, cfg
