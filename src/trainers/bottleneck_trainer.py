@@ -15,6 +15,7 @@ from safetensors.torch import save_file
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch_ema import ExponentialMovingAverage
+from tqdm.auto import tqdm
 from transformers import get_constant_schedule_with_warmup
 
 from src.losses.reconstruction import reconstruction_loss
@@ -233,22 +234,31 @@ class BottleneckTrainer:
         self.accelerator.init_trackers("bottleneck_ae", config=asdict(cfg))
 
         global_step = 0
-        log_loss_sum = log_l_recon_sum = log_l_sem_sum = 0.0
+        log_loss_sum = log_l_recon_sum = log_l_sem_sum = log_gnorm_sum = 0.0
         log_micro_steps = 0
+        last_grad_norm = 0.0
 
         for epoch in range(cfg.epochs):
             self._core.train()
 
-            for batch in self._train_dl:
+            epoch_bar = tqdm(
+                self._train_dl,
+                desc=f"Epoch {epoch + 1}/{cfg.epochs}",
+                disable=not self.accelerator.is_main_process,
+                dynamic_ncols=True,
+            )
+
+            for batch in epoch_bar:
                 with self.accelerator.accumulate(self._core):
                     outputs = self._forward(batch)
                     loss = outputs["loss"]
                     self.accelerator.backward(loss)
 
                     if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(
+                        grad_norm = self.accelerator.clip_grad_norm_(
                             self._core.parameters(), cfg.max_grad_norm
                         )
+                        last_grad_norm = grad_norm.item()
 
                     self._optimizer.step()
                     self._scheduler.step()
@@ -261,7 +271,12 @@ class BottleneckTrainer:
                     log_l_sem_sum += outputs["l_sem"].item()
                 log_micro_steps += 1
 
+                # Update tqdm postfix every micro-step
+                postfix: Dict[str, str] = {"loss": f"{loss.detach().item():.4f}"}
+                epoch_bar.set_postfix(postfix)
+
                 if self.accelerator.sync_gradients:
+                    log_gnorm_sum += last_grad_norm
                     if self._ema is not None:
                         self._ema.update()
                     global_step += 1
@@ -269,9 +284,10 @@ class BottleneckTrainer:
                     if global_step % cfg.logging_steps == 0:
                         self._log_train(
                             global_step, epoch,
-                            log_loss_sum, log_l_recon_sum, log_l_sem_sum, log_micro_steps,
+                            log_loss_sum, log_l_recon_sum, log_l_sem_sum,
+                            log_gnorm_sum, log_micro_steps,
                         )
-                        log_loss_sum = log_l_recon_sum = log_l_sem_sum = 0.0
+                        log_loss_sum = log_l_recon_sum = log_l_sem_sum = log_gnorm_sum = 0.0
                         log_micro_steps = 0
 
                     if global_step % cfg.eval_steps == 0:
@@ -292,12 +308,14 @@ class BottleneckTrainer:
         loss_sum: float,
         l_recon_sum: float,
         l_sem_sum: float,
+        gnorm_sum: float,
         n: int,
     ):
         n = max(n, 1)
         log_dict = {
             "train/loss": loss_sum / n,
             "train/l_recon": l_recon_sum / n,
+            "train/grad_norm": gnorm_sum / n,
             "train/lr": self._scheduler.get_last_lr()[0],
             "epoch": epoch,
         }
@@ -308,10 +326,10 @@ class BottleneckTrainer:
 
         if self.accelerator.is_main_process:
             sem_str = f"  l_sem={l_sem_sum/n:.4f}" if self._repr_encoder else ""
-            print(
-                f"step={step}  loss={loss_sum/n:.4f}"
-                f"  l_recon={l_recon_sum/n:.4f}{sem_str}"
-                f"  lr={self._scheduler.get_last_lr()[0]:.2e}"
+            tqdm.write(
+                f"epoch={epoch + 1}  step={step}"
+                f"  loss={loss_sum/n:.4f}  l_recon={l_recon_sum/n:.4f}{sem_str}"
+                f"  gnorm={gnorm_sum/n:.3f}  lr={self._scheduler.get_last_lr()[0]:.2e}"
             )
 
     # ------------------------------------------------------------------
@@ -335,8 +353,16 @@ class BottleneckTrainer:
         all_preds: List[np.ndarray] = []
         all_labels: List[np.ndarray] = []
 
+        eval_bar = tqdm(
+            self._eval_dl,
+            desc="Evaluating",
+            disable=not self.accelerator.is_main_process,
+            dynamic_ncols=True,
+            leave=False,
+        )
+
         try:
-            for batch in self._eval_dl:
+            for batch in eval_bar:
                 with torch.no_grad():
                     outputs = self._forward(batch)
 
@@ -363,7 +389,6 @@ class BottleneckTrainer:
         l_sem_acc = self.accelerator.reduce(l_sem_acc, reduction="sum")
         count = self.accelerator.reduce(count, reduction="sum")
 
-        n = count.item()
         eval_loss = (loss_acc / count).item()
 
         metrics: Dict[str, float] = {
@@ -385,7 +410,7 @@ class BottleneckTrainer:
 
         if self.accelerator.is_main_process:
             parts = "  ".join(f"{k}={v:.4f}" for k, v in metrics.items())
-            print(f"[eval step={step}]  {parts}")
+            tqdm.write(f"[eval step={step}]  {parts}")
 
         return metrics
 

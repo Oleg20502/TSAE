@@ -41,12 +41,13 @@ def main():
     encoder, decoder, repr_encoder, latent_aug, lambda_sem = build_ae_components(
         cfg, vocab_size, pad_token_id
     )
-    n_enc_dec = sum(p.numel() for p in encoder.parameters()) + sum(
-        p.numel() for p in decoder.parameters()
-    )
-    n_repr = sum(p.numel() for p in repr_encoder.parameters()) if repr_encoder else 0
-    print(f"Parameters: {n_enc_dec:,} trainable / {n_enc_dec + n_repr:,} total")
 
+    n_enc = sum(p.numel() for p in encoder.parameters())
+    n_dec = sum(p.numel() for p in decoder.parameters())
+    n_repr = sum(p.numel() for p in repr_encoder.parameters()) if repr_encoder else 0
+    print(f"Parameters:\nEncoder: {n_enc:,} trainable; Decoder: {n_dec:,} trainable; Repr: {n_repr:,} frozen.")
+    print(f"Total: {n_enc + n_dec:,} trainable / {n_enc + n_dec + n_repr:,} all parameters")
+    
     datasets = load_text_dataset(cfg.data)
     collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
 
