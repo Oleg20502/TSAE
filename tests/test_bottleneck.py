@@ -11,10 +11,10 @@ import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.backbones.base_repr import BaseTextReprEncoder
-from src.models.bottleneck_encoder import BottleneckEncoder
+from src.backbones.repr_embedder import BaseTextReprEncoder
+from src.models.encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
-from src.models.decoder import AutoRegressiveDecoder
+from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
 from src.models.bottleneck_ae import BottleneckAE
 
 
@@ -50,7 +50,7 @@ class DummyReprEncoder(BaseTextReprEncoder):
 # ---------------------------------------------------------------------------
 
 B, T, H = 4, 32, 64  # batch, seq len, hidden / backbone dim
-D_LATENT = 32
+D_MODEL = 32
 N_LATENT = 4  # n_latent_tokens for tests
 VOCAB = 1000
 D_DEC = 32
@@ -60,9 +60,9 @@ N_HEADS = 4
 @pytest.fixture
 def encoder():
     return BottleneckEncoder(
-        vocab_size=VOCAB, d_model=D_LATENT, d_latent=D_LATENT,
+        vocab_size=VOCAB, d_model=D_MODEL,
         n_latent_tokens=N_LATENT,
-        n_layers=2, n_heads=N_HEADS, d_ff=D_LATENT * 2,
+        n_layers=2, n_heads=N_HEADS, d_ff=D_MODEL * 2,
         max_length=T, pad_token_id=0,
     )
 
@@ -123,7 +123,7 @@ class TestBottleneckEncoderShapes:
         ids = torch.randint(1, VOCAB, (B, T))
         mask = torch.ones(B, T, dtype=torch.long)
         z = encoder(ids, mask)
-        assert z.shape == (B, N_LATENT, D_LATENT)
+        assert z.shape == (B, N_LATENT, D_MODEL)
 
     def test_with_padding(self, encoder):
         ids = torch.randint(1, VOCAB, (B, T))
@@ -131,25 +131,12 @@ class TestBottleneckEncoderShapes:
         mask[:, -10:] = 0
         ids[mask == 0] = 0
         z = encoder(ids, mask)
-        assert z.shape == (B, N_LATENT, D_LATENT)
+        assert z.shape == (B, N_LATENT, D_MODEL)
 
     def test_no_mask(self, encoder):
         ids = torch.randint(1, VOCAB, (B, T))
         z = encoder(ids, attention_mask=None)
-        assert z.shape == (B, N_LATENT, D_LATENT)
-
-    def test_different_d_latent_and_n_tokens(self):
-        """When d_model != d_latent and n_latent_tokens > 1, shapes are correct."""
-        enc = BottleneckEncoder(
-            vocab_size=VOCAB, d_model=64, d_latent=32,
-            n_latent_tokens=3,
-            n_layers=1, n_heads=4, d_ff=128,
-            max_length=T, pad_token_id=0,
-        )
-        ids = torch.randint(1, VOCAB, (B, T))
-        mask = torch.ones(B, T, dtype=torch.long)
-        z = enc(ids, mask)
-        assert z.shape == (B, 3, 32)
+        assert z.shape == (B, N_LATENT, D_MODEL)
 
 
 # ---------------------------------------------------------------------------
@@ -161,14 +148,14 @@ class TestLatentAugmentation:
         """With default params (0.0, 0.0), output should equal input."""
         aug = LatentAugmentation()
         aug.train()
-        z = torch.randn(B, 1, D_LATENT)
+        z = torch.randn(B, 1, D_MODEL)
         z_out = aug(z)
         assert torch.equal(z, z_out)
 
     def test_noise_changes_output(self):
         aug = LatentAugmentation(noise_std=1.0)
         aug.train()
-        z = torch.randn(B, 1, D_LATENT)
+        z = torch.randn(B, 1, D_MODEL)
         z_out = aug(z)
         # With std=1.0, output should differ
         assert not torch.equal(z, z_out)
@@ -177,7 +164,7 @@ class TestLatentAugmentation:
         """In eval mode, augmentation should be a no-op even with high params."""
         aug = LatentAugmentation(noise_std=1.0, feature_dropout_p=0.9)
         aug.eval()
-        z = torch.randn(B, 1, D_LATENT)
+        z = torch.randn(B, 1, D_MODEL)
         z_out = aug(z)
         assert torch.equal(z, z_out)
 
@@ -185,7 +172,7 @@ class TestLatentAugmentation:
         aug = LatentAugmentation(feature_dropout_p=0.5)
         aug.train()
         torch.manual_seed(0)
-        z = torch.ones(B, 1, D_LATENT)
+        z = torch.ones(B, 1, D_MODEL)
         z_out = aug(z)
         # Some elements should be zeroed (with high probability at p=0.5)
         assert (z_out == 0).any(), "Expected some zeroed dimensions from feature dropout"
@@ -201,7 +188,7 @@ class TestBottleneckAEShapes:
         mask = torch.ones(B, T, dtype=torch.long)
         z = bottleneck_model.encode(ids, mask)
         sent_emb = bottleneck_model.embed(ids, mask)
-        assert z.shape == (B, N_LATENT, D_LATENT)
+        assert z.shape == (B, N_LATENT, D_MODEL)
         assert sent_emb.shape == (B, H)
 
     def test_forward_output_keys(self, bottleneck_model, sample_batch):
@@ -216,7 +203,7 @@ class TestBottleneckAEShapes:
     def test_forward_shapes(self, bottleneck_model, sample_batch):
         out = bottleneck_model(**sample_batch)
         assert out["logits"].shape == (B, T, VOCAB)
-        assert out["z"].shape == (B, N_LATENT, D_LATENT)
+        assert out["z"].shape == (B, N_LATENT, D_MODEL)
         assert out["loss"].dim() == 0  # scalar
 
     def test_generate_greedy(self, bottleneck_model):
@@ -236,12 +223,34 @@ class TestBottleneckAEShapes:
 
 def _build_bottleneck_model():
     encoder = BottleneckEncoder(
-        vocab_size=VOCAB, d_model=D_LATENT, d_latent=D_LATENT,
+        vocab_size=VOCAB, d_model=D_MODEL,
         n_latent_tokens=N_LATENT,
-        n_layers=2, n_heads=N_HEADS, d_ff=D_LATENT * 2,
+        n_layers=2, n_heads=N_HEADS, d_ff=D_MODEL * 2,
         max_length=T, pad_token_id=0,
     )
     decoder = AutoRegressiveDecoder(
+        vocab_size=VOCAB, d_model=D_DEC, n_layers=2, n_heads=N_HEADS,
+        d_ff=D_DEC * 2, max_length=T, pad_token_id=0,
+    )
+    repr_enc = DummyReprEncoder(hidden_size=H)
+    return BottleneckAE(
+        encoder=encoder,
+        decoder=decoder,
+        repr_encoder=repr_enc,
+        latent_aug=LatentAugmentation(noise_std=0.05, feature_dropout_p=0.1),
+        lambda_sem=0.2,
+        freeze_repr=False,
+    )
+
+
+def _build_bottleneck_model_parallel():
+    encoder = BottleneckEncoder(
+        vocab_size=VOCAB, d_model=D_MODEL,
+        n_latent_tokens=N_LATENT,
+        n_layers=2, n_heads=N_HEADS, d_ff=D_MODEL * 2,
+        max_length=T, pad_token_id=0,
+    )
+    decoder = ParallelLatentDecoder(
         vocab_size=VOCAB, d_model=D_DEC, n_layers=2, n_heads=N_HEADS,
         d_ff=D_DEC * 2, max_length=T, pad_token_id=0,
     )
@@ -277,6 +286,12 @@ class TestBottleneckTrainStep:
         batch = _make_batch()
         out = model(**batch)
         assert torch.isfinite(out["loss"]), f"Loss is not finite: {out['loss']}"
+
+    def test_loss_is_finite_parallel_decoder(self):
+        model = _build_bottleneck_model_parallel()
+        batch = _make_batch()
+        out = model(**batch)
+        assert torch.isfinite(out["loss"]), f"Loss is not finite (parallel): {out['loss']}"
 
     def test_backward_runs(self):
         model = _build_bottleneck_model()

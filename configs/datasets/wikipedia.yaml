@@ -1,5 +1,0 @@
-data:
-  preprocessed_dir: data/wiki_prepared
-  num_train_samples: 100000
-  num_val_samples: 2000
-  seed: 42

@@ -10,10 +10,8 @@ from transformers import AutoTokenizer, TrainingArguments
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.utils.config import merge_bottleneck_configs, BottleneckExperimentConfig
-from src.backbones.simcse_repr import SimCSEReprEncoder
-from src.models.bottleneck_encoder import BottleneckEncoder
-from src.models.latent_augmentation import LatentAugmentation
+from src.utils.config import load_config, save_config, BottleneckExperimentConfig
+from src.models.encoder import BottleneckEncoder
 from src.models.decoder import AutoRegressiveDecoder
 from src.models.bottleneck_ae import BottleneckAE
 from src.data.datasets import load_text_dataset
@@ -33,40 +31,30 @@ def build_rae_model(
 ) -> BottleneckAE:
     mc = cfg.model
 
-    # # Representation backbone (frozen, semantic loss target only)
-    # repr_encoder = SimCSEReprEncoder(model_name=mc.backbone_name)
-
     # Bottleneck encoder (standalone transformer)
     encoder = BottleneckEncoder(
         vocab_size=vocab_size,
-        d_model=mc.encoder_dim,
-        d_latent=mc.d_latent,
+        d_model=mc.d_model,
         n_latent_tokens=mc.n_latent_tokens,
         n_layers=mc.encoder_layers,
         n_heads=mc.encoder_heads,
         d_ff=mc.encoder_ff_dim,
-        max_length=mc.max_encoder_length,
+        max_length=mc.max_length,
         dropout=mc.encoder_dropout,
         pad_token_id=pad_token_id,
+        normalize_latent=mc.normalize_latent,
     )
 
-    # Decoder
     decoder = AutoRegressiveDecoder(
         vocab_size=vocab_size,
-        d_model=mc.decoder_dim,
+        d_model=mc.d_model,
         n_layers=mc.decoder_layers,
         n_heads=mc.decoder_heads,
         d_ff=mc.decoder_ff_dim,
-        max_length=mc.max_decoder_length,
+        max_length=mc.max_length,
         dropout=mc.decoder_dropout,
         pad_token_id=pad_token_id,
     )
-
-    # Latent augmentation
-    # latent_aug = LatentAugmentation(
-    #     noise_std=mc.noise_std,
-    #     feature_dropout_p=mc.feature_dropout_p,
-    # )
 
     # Full model
     model = BottleneckAE(
@@ -87,16 +75,21 @@ def build_rae_model(
 def main():
     parser = argparse.ArgumentParser(description="Train Bottleneck autoencoder")
     parser.add_argument(
-        "--configs",
-        nargs="+",
+        "--config",
+        type=str,
         required=True,
-        help="One or more YAML config files (later overrides earlier)",
+        help="Path to a single YAML config containing model, train, and data sections",
     )
     args = parser.parse_args()
 
     # Load config
-    cfg = merge_bottleneck_configs(*args.configs)
+    cfg = load_config(args.config)
     print(f"=== Config ===\n{cfg}\n")
+
+    # Save all hyperparameters to output_dir
+    tc = cfg.train
+    Path(tc.output_dir).mkdir(parents=True, exist_ok=True)
+    save_config(cfg, Path(tc.output_dir) / "config.yaml")
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
@@ -111,10 +104,9 @@ def main():
 
     # Data
     datasets = load_text_dataset(cfg.data)
-    collator = ARDecoderCollator.from_data_config(tokenizer, cfg.data)
+    collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
 
     # Training arguments
-    tc = cfg.train
     training_args = TrainingArguments(
         output_dir=tc.output_dir,
         num_train_epochs=tc.epochs,
@@ -131,6 +123,7 @@ def main():
         save_strategy="steps",
         save_steps=tc.save_steps,
         save_total_limit=tc.save_total_limit,
+        max_grad_norm=tc.max_grad_norm,
         fp16=tc.fp16,
         bf16=tc.bf16,
         dataloader_num_workers=tc.dataloader_num_workers,

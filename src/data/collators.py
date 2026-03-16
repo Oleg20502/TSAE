@@ -22,28 +22,17 @@ class ARDecoderCollator:
     The decoder uses the same tokenizer as the encoder.  Decoder inputs are
     the target tokens shifted right (prepended with BOS / [CLS]).
     Labels have padding positions set to -100 so they are ignored by CE loss.
-
-    ``max_length`` and ``text_column`` are typically taken from the data config
-    (e.g. ``cfg.data``). Use ``from_data_config(tokenizer, cfg.data)`` to build
-    from config.
     """
 
-    tokenizer: PreTrainedTokenizerBase
-    max_length: int = 128
-    text_column: str = "text"
-
-    @classmethod
-    def from_data_config(
-        cls,
+    def __init__(
+        self,
         tokenizer: PreTrainedTokenizerBase,
-        data_config: "DataConfig",
-    ) -> ARDecoderCollator:
-        """Build collator from a data config (max_length and text_column from config)."""
-        return cls(
-            tokenizer=tokenizer,
-            max_length=data_config.max_length,
-            text_column=data_config.text_column,
-        )
+        max_length: int = 128,
+        text_column: str = "text",
+    ):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.text_column = text_column
 
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         texts = [ex[self.text_column] for ex in examples]

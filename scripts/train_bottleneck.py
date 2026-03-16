@@ -10,75 +10,12 @@ from transformers import AutoTokenizer, TrainingArguments
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.utils.config import merge_bottleneck_configs, BottleneckExperimentConfig
-from src.backbones.simcse_repr import SimCSEReprEncoder
-from src.models.bottleneck_encoder import BottleneckEncoder
-from src.models.latent_augmentation import LatentAugmentation
-from src.models.decoder import AutoRegressiveDecoder
-from src.models.bottleneck_ae import BottleneckAE
+from src.utils.config import load_config, save_config
 from src.data.datasets import load_text_dataset
 from src.data.collators import ARDecoderCollator
+from src.models.bottleneck_ae import build_bottleneck_model
 from src.eval.reconstruction_metrics import compute_metrics
 from src.trainers import BottleneckTrainer, preprocess_logits_for_metrics
-
-
-# ---------------------------------------------------------------------------
-# Build model from config
-# ---------------------------------------------------------------------------
-
-def build_rae_model(
-    cfg: BottleneckExperimentConfig,
-    vocab_size: int,
-    pad_token_id: int,
-) -> BottleneckAE:
-    mc = cfg.model
-
-    # Representation backbone (frozen, semantic loss target only)
-    repr_encoder = SimCSEReprEncoder(model_name=mc.backbone_name)
-
-    # Bottleneck encoder (standalone transformer)
-    encoder = BottleneckEncoder(
-        vocab_size=vocab_size,
-        d_model=mc.encoder_dim,
-        d_latent=mc.d_latent,
-        n_latent_tokens=mc.n_latent_tokens,
-        n_layers=mc.encoder_layers,
-        n_heads=mc.encoder_heads,
-        d_ff=mc.encoder_ff_dim,
-        max_length=mc.max_encoder_length,
-        dropout=mc.encoder_dropout,
-        pad_token_id=pad_token_id,
-    )
-
-    # Decoder
-    decoder = AutoRegressiveDecoder(
-        vocab_size=vocab_size,
-        d_model=mc.decoder_dim,
-        n_layers=mc.decoder_layers,
-        n_heads=mc.decoder_heads,
-        d_ff=mc.decoder_ff_dim,
-        max_length=mc.max_decoder_length,
-        dropout=mc.decoder_dropout,
-        pad_token_id=pad_token_id,
-    )
-
-    # Latent augmentation
-    latent_aug = LatentAugmentation(
-        noise_std=mc.noise_std,
-        feature_dropout_p=mc.feature_dropout_p,
-    )
-
-    # Full model
-    model = BottleneckAE(
-        encoder=encoder,
-        decoder=decoder,
-        repr_encoder=repr_encoder,
-        latent_aug=latent_aug,
-        lambda_sem=mc.lambda_sem,
-        freeze_repr=mc.freeze_repr,
-    )
-    return model
-
 
 # ---------------------------------------------------------------------------
 # Main
@@ -87,16 +24,21 @@ def build_rae_model(
 def main():
     parser = argparse.ArgumentParser(description="Train Bottleneck autoencoder")
     parser.add_argument(
-        "--configs",
-        nargs="+",
+        "--config",
+        type=str,
         required=True,
-        help="One or more YAML config files (later overrides earlier)",
+        help="Path to a single YAML config containing model, train, and data sections",
     )
     args = parser.parse_args()
 
     # Load config
-    cfg = merge_bottleneck_configs(*args.configs)
+    cfg = load_config(args.config)
     print(f"=== Config ===\n{cfg}\n")
+
+    # Save all hyperparameters to output_dir
+    tc = cfg.train
+    Path(tc.output_dir).mkdir(parents=True, exist_ok=True)
+    save_config(cfg, Path(tc.output_dir) / "config.yaml")
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
@@ -104,17 +46,16 @@ def main():
     pad_token_id = tokenizer.pad_token_id or 0
 
     # Model
-    model = build_rae_model(cfg, vocab_size, pad_token_id)
+    model = build_bottleneck_model(cfg, vocab_size, pad_token_id)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_trainable:,} trainable / {n_total:,} total")
 
     # Data
     datasets = load_text_dataset(cfg.data)
-    collator = ARDecoderCollator.from_data_config(tokenizer, cfg.data)
+    collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
 
     # Training arguments
-    tc = cfg.train
     training_args = TrainingArguments(
         output_dir=tc.output_dir,
         num_train_epochs=tc.epochs,
@@ -131,6 +72,7 @@ def main():
         save_strategy="steps",
         save_steps=tc.save_steps,
         save_total_limit=tc.save_total_limit,
+        max_grad_norm=tc.max_grad_norm,
         fp16=tc.fp16,
         bf16=tc.bf16,
         dataloader_num_workers=tc.dataloader_num_workers,
@@ -148,15 +90,23 @@ def main():
         data_collator=collator,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
         compute_metrics=compute_metrics,
+        ema_decay=tc.ema_decay,
     )
 
     # Train
     trainer.train()
 
-    # Save final model
-    trainer.save_model(tc.output_dir + "/final")
-    tokenizer.save_pretrained(tc.output_dir + "/final")
-    print(f"Model saved to {tc.output_dir}/final")
+    # Save final EMA and non-EMA models
+    final_ema_dir = tc.output_dir + "/final"
+    trainer.save_model(final_ema_dir)
+    tokenizer.save_pretrained(final_ema_dir)
+    print(f"EMA model saved to {final_ema_dir}")
+
+    if tc.ema_decay is not None and tc.ema_decay > 0.0:
+        final_raw_dir = tc.output_dir + "/final_raw"
+        trainer.save_non_ema_model(final_raw_dir)
+        tokenizer.save_pretrained(final_raw_dir)
+        print(f"Non-EMA model saved to {final_raw_dir}")
 
 
 if __name__ == "__main__":

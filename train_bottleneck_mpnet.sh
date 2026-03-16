@@ -2,9 +2,10 @@
 set -e
 
 export CUDA_VISIBLE_DEVICES="0,1,2,3"
+# export CUDA_VISIBLE_DEVICES="4,5,6,7"
 NP=4
 
 accelerate launch --num_processes $NP --config_file ./accel_configs/fp32_ds_s2.yaml \
-    scripts/train_bottleneck_no_repr.py --config configs/train/ae_no_repr_fineweb.yaml
+    scripts/train_bottleneck.py --config configs/train/ae_mpnet_fineweb_nl_2_std_0.2_sl_1.yaml
 
 echo "done"

@@ -1,7 +1,0 @@
-# FineWeb sample-10BT
-data:
-  preprocessed_dir: /home/okashurin/okashurin/datasets/fineweb_10bt_chunks
-  max_length: 16
-  num_train_samples: null
-  num_val_samples: null
-  seed: 42

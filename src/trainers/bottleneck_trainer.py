@@ -1,12 +1,32 @@
 """Bottleneck AE Trainer: logs l_recon and l_sem for train and validation."""
 
 import math
+from typing import Optional
 
 import torch
+from torch_ema import ExponentialMovingAverage
 from transformers import Trainer
 
 
+def _state_dict_no_shared_duplicates(state_dict):
+    """Drop keys that reference the same tensor storage as an earlier key (safetensors forbids duplicates)."""
+    seen_ptr = {}
+    out = {}
+    for k, v in state_dict.items():
+        if not isinstance(v, torch.Tensor):
+            out[k] = v
+            continue
+        ptr = v.data_ptr()
+        if ptr in seen_ptr:
+            continue
+        seen_ptr[ptr] = k
+        out[k] = v
+    return out
+
+
+# ---------------------------------------------------------------------------
 # For fast handling of logits using gpu
+# ---------------------------------------------------------------------------
 def preprocess_logits_for_metrics(logits, labels):
     pred_ids = torch.argmax(logits[0], dim=-1)
     return pred_ids
@@ -19,6 +39,15 @@ class BottleneckTrainer(Trainer):
     accumulates l_recon and l_sem in the same pass as eval_loss and adds
     eval_l_recon / eval_l_sem to the metrics (no second eval pass).
     """
+
+    def __init__(self, *args, ema_decay: Optional[float] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ema: Optional[ExponentialMovingAverage] = None
+        if ema_decay is not None and ema_decay > 0.0:
+            # Track all trainable parameters
+            params = [p for p in self.model.parameters() if p.requires_grad]
+            if params:
+                self._ema = ExponentialMovingAverage(params, decay=ema_decay)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         outputs = model(**inputs)
@@ -62,6 +91,15 @@ class BottleneckTrainer(Trainer):
             return (loss, outputs)
         return loss
 
+    def optimizer_step(
+        self,
+        *args,
+        **kwargs,
+    ):
+        super().optimizer_step(*args, **kwargs)
+        if self._ema is not None:
+            self._ema.update()
+
     def log(self, logs, start_time=None):
         # Merge component losses into the main training log line so everything
         # (loss, grad_norm, lr, train_l_*) is emitted together.
@@ -86,6 +124,11 @@ class BottleneckTrainer(Trainer):
         self._eval_sem_sum = 0.0
         self._eval_n = 0
 
+        # Use EMA weights during evaluation if available
+        if self._ema is not None:
+            self._ema.store()
+            self._ema.copy_to()
+
         output = super().evaluation_loop(
             dataloader=dataloader,
             description=description,
@@ -93,6 +136,9 @@ class BottleneckTrainer(Trainer):
             ignore_keys=ignore_keys,
             metric_key_prefix=metric_key_prefix,
         )
+
+        if self._ema is not None:
+            self._ema.restore()
 
         # Add component losses and perplexity so they are included when evaluate() logs
         if self._eval_n > 0:
@@ -103,3 +149,26 @@ class BottleneckTrainer(Trainer):
             output.metrics[f"{metric_key_prefix}_perplexity"] = math.exp(output.metrics[loss_key])
 
         return output
+
+    def _save(self, output_dir=None, state_dict=None):
+        # Avoid safetensors error when decoder.lm_head.weight and decoder.tok_emb.weight are tied
+        if state_dict is None:
+            state_dict = self.model.state_dict()
+        state_dict = _state_dict_no_shared_duplicates(state_dict)
+        super()._save(output_dir=output_dir, state_dict=state_dict)
+
+    def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
+        # Save EMA weights if present
+        if self._ema is None:
+            return super().save_model(output_dir=output_dir, _internal_call=_internal_call)
+
+        self._ema.store()
+        self._ema.copy_to()
+        try:
+            return super().save_model(output_dir=output_dir, _internal_call=_internal_call)
+        finally:
+            self._ema.restore()
+
+    def save_non_ema_model(self, output_dir: Optional[str] = None):
+        """Save the raw (non-EMA) model weights for continued fine-tuning."""
+        return super().save_model(output_dir=output_dir, _internal_call=False)

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+# Legacy script, should be deprecated and removed. Left for future rebuilding
 """Evaluate a trained RAE-text autoencoder."""
+
 
 import argparse
 import json
@@ -16,7 +18,6 @@ from src.utils.config import merge_configs
 from src.data.datasets import load_text_dataset
 from src.data.collators import ARDecoderCollator
 
-from src.models.rae_text import build_rae_model
 from src.eval.evaluation import evaluate
 
 
@@ -68,7 +69,7 @@ def main():
 
     # Data
     datasets = load_text_dataset(cfg.data)
-    collator = ARDecoderCollator.from_data_config(tokenizer, cfg.data)
+    collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
     val_loader = DataLoader(
         datasets["validation"],
         batch_size=cfg.eval.batch_size,

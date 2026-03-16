@@ -4,7 +4,7 @@
 Run once before training. Training then loads from preprocessed_dir and skips heavy preprocessing.
 
 Example:
-  python scripts/prepare_dataset.py --configs configs/preprocess/wikipedia_preprocess.yaml
+  python scripts/prepare_dataset.py --configs configs/preprocess/fineweb_10bt_ml_64.yaml
   # Then set data.preprocessed_dir in your train/dataset config to the preprocessed_dir from the preprocess config.
 """
 
