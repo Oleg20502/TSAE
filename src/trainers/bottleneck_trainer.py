@@ -22,14 +22,20 @@ class BottleneckTrainer(Trainer):
     Logs train_l_recon / train_l_sem at logging steps. During evaluation,
     accumulates l_recon and l_sem in the same pass as eval_loss and adds
     eval_l_recon / eval_l_sem to the metrics (no second eval pass).
+
+    EMA: validation uses EMA weights (store → copy_to before eval, restore after).
+    If validation loss is constant, ensure the model used in the eval loop is the
+    same reference we update (unwrapped params at init); with FSDP/sharding, EMA
+    may not apply to the eval model.
     """
 
     def __init__(self, *args, ema_decay: Optional[float] = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._ema: Optional[ExponentialMovingAverage] = None
         if ema_decay is not None and ema_decay > 0.0:
-            # Track all trainable parameters
-            params = [p for p in self.model.parameters() if p.requires_grad]
+            # Use unwrapped model so EMA tracks the same params after Trainer/Accelerator wrapping
+            inner = getattr(self.model, "module", self.model)
+            params = [p for p in inner.parameters() if p.requires_grad]
             if params:
                 self._ema = ExponentialMovingAverage(params, decay=ema_decay)
 
@@ -108,10 +114,13 @@ class BottleneckTrainer(Trainer):
         self._eval_sem_sum = 0.0
         self._eval_n = 0
 
-        # Use EMA weights during evaluation if available
+        # Use EMA weights during evaluation if available (same model reference the parent will use)
         if self._ema is not None:
             self._ema.store()
             self._ema.copy_to()
+        # Ensure eval mode; parent's loop also sets it, but we need it before parent reads self.model
+        if hasattr(self.model, "eval") and callable(self.model.eval):
+            self.model.eval()
 
         output = super().evaluation_loop(
             dataloader=dataloader,
