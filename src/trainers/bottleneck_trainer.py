@@ -176,6 +176,11 @@ class BottleneckTrainer:
             optimizer, num_warmup_steps=train_config.warmup_steps
         )
 
+        # Capture true optimizer-steps-per-epoch before accelerate.prepare() inflates len(train_dl)
+        self._steps_per_epoch = math.ceil(
+            len(train_dl) / train_config.gradient_accumulation_steps
+        )
+
         # Accelerate wraps core, optimizer, dataloaders, scheduler — NOT repr_encoder
         (
             self._core,
@@ -242,13 +247,13 @@ class BottleneckTrainer:
             self._core.train()
 
             epoch_bar = tqdm(
-                self._train_dl,
+                total=self._steps_per_epoch,
                 desc=f"Epoch {epoch + 1}/{cfg.epochs}",
                 disable=not self.accelerator.is_main_process,
                 dynamic_ncols=True,
             )
 
-            for batch in epoch_bar:
+            for batch in self._train_dl:
                 with self.accelerator.accumulate(self._core):
                     outputs = self._forward(batch)
                     loss = outputs["loss"]
@@ -271,11 +276,12 @@ class BottleneckTrainer:
                     log_l_sem_sum += outputs["l_sem"].item()
                 log_micro_steps += 1
 
-                # Update tqdm postfix every micro-step
-                postfix: Dict[str, str] = {"loss": f"{loss.detach().item():.4f}"}
-                epoch_bar.set_postfix(postfix)
-
                 if self.accelerator.sync_gradients:
+                    # Advance the bar once per optimizer step
+                    postfix: Dict[str, str] = {"loss": f"{loss.detach().item():.4f}"}
+                    epoch_bar.set_postfix(postfix)
+                    epoch_bar.update(1)
+
                     log_gnorm_sum += last_grad_norm
                     if self._ema is not None:
                         self._ema.update()
@@ -298,6 +304,8 @@ class BottleneckTrainer:
                         ckpt_dir = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
                         self.save_checkpoint(ckpt_dir)
                         self._rotate_checkpoints()
+
+            epoch_bar.close()
 
         self.accelerator.end_training()
 
