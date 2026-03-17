@@ -2,7 +2,7 @@
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import yaml
 from dacite import from_dict, Config as DaciteConfig
@@ -197,3 +197,86 @@ def save_config(cfg: BottleneckExperimentConfig, path: str | Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(asdict(cfg), f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+# ---------------------------------------------------------------------------
+# Concept Model configs
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ConceptDataConfig:
+    """Configuration for the Concept Model data pipeline.
+
+    Points at the same pre-chunked FineWeb dataset used by the AE, but
+    groups ``n_chunks`` consecutive chunks into a single CM training sequence.
+    """
+
+    preprocessed_dir: Optional[str] = None
+    n_chunks: int = 64
+    text_column: str = "text"
+    num_val_samples: Optional[int] = 1000
+    seed: int = 42
+    dataloader_num_workers: int = 4
+
+
+@dataclass
+class ConceptModelConfig:
+    """Configuration for the Concept Model."""
+
+    # ---- Frozen AE to load ----
+    ae_config_path: str = ""
+    ae_checkpoint_path: str = ""
+
+    # ---- CM type ----
+    # "custom" → scratch transformer; anything else is a HuggingFace causal-LM
+    # model name used as the backbone (e.g. "gpt2", "gpt2-medium").
+    cm_type: str = "custom"
+
+    # ---- Custom CM architecture ----
+    d_model: int = 512
+    n_heads: int = 8
+    n_layers: int = 6
+    ff_dim: int = 2048
+    rope_base: float = 10000.0
+    dropout: float = 0.1
+
+    # ---- Loss ----
+    lambda_mse: float = 0.1
+
+
+@dataclass
+class ConceptExperimentConfig:
+    """Top-level config for Concept Model training."""
+
+    data: ConceptDataConfig = field(default_factory=ConceptDataConfig)
+    model: ConceptModelConfig = field(default_factory=ConceptModelConfig)
+    train: TrainConfig = field(default_factory=TrainConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
+
+
+def load_concept_config(path: str | Path) -> ConceptExperimentConfig:
+    """Load a ConceptExperimentConfig from a YAML file."""
+    raw = load_yaml(path)
+    return from_dict(data_class=ConceptExperimentConfig, data=raw, config=_DACITE_CFG)
+
+
+def merge_concept_configs(*paths: str | Path) -> ConceptExperimentConfig:
+    """Load and merge multiple YAML files for the Concept Model (later overrides earlier)."""
+    merged: dict = {}
+    for p in paths:
+        raw = load_yaml(p)
+        for section, values in raw.items():
+            if section not in merged:
+                merged[section] = {}
+            if isinstance(values, dict):
+                merged[section].update(values)
+            else:
+                merged[section] = values
+    return from_dict(data_class=ConceptExperimentConfig, data=merged, config=_DACITE_CFG)
+
+
+def load_concept_config_from_paths(paths: List[str] | List[Path]) -> ConceptExperimentConfig:
+    """Load ConceptExperimentConfig from one or more YAML files."""
+    if len(paths) == 1:
+        return load_concept_config(paths[0])
+    return merge_concept_configs(*paths)
