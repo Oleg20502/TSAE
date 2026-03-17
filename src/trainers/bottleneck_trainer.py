@@ -303,8 +303,6 @@ class BottleneckTrainer:
                 if self.accelerator.sync_gradients:
                     # Advance the bar once per optimizer step
                     postfix: Dict[str, str] = {"loss": f"{loss.detach().item():.4f}"}
-                    if last_grad_norm:
-                        postfix["gnorm"] = f"{last_grad_norm:.3f}"
                     epoch_bar.set_postfix(postfix)
                     epoch_bar.update(1)
 
