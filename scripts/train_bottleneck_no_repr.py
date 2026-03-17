@@ -25,6 +25,12 @@ def main():
         required=True,
         help="Path to a YAML config containing model, train, and data sections",
     )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Path to a checkpoint directory to resume from, or 'latest' to auto-detect",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -62,7 +68,7 @@ def main():
         compute_metrics=compute_metrics,
     )
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
     final_dir = tc.output_dir + "/final"
     trainer.save_model(final_dir, tokenizer=tokenizer)

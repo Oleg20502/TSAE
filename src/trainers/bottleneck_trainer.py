@@ -1,9 +1,11 @@
 """Lightweight custom trainer for the Bottleneck autoencoder using Accelerate."""
 
+import json
 import math
 import os
 import shutil
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional
 
@@ -234,26 +236,48 @@ class BottleneckTrainer:
     # Training loop
     # ------------------------------------------------------------------
 
-    def train(self):
+    def train(self, resume_from_checkpoint: Optional[str] = None):
         cfg = self.cfg
         self.accelerator.init_trackers("bottleneck_ae", config=asdict(cfg))
 
         global_step = 0
+        start_epoch = 0
+        resume_steps_in_epoch = 0  # optimizer steps already done in start_epoch
+
+        if resume_from_checkpoint is not None:
+            if resume_from_checkpoint == "latest":
+                resume_from_checkpoint = self._find_latest_checkpoint()
+            if resume_from_checkpoint is not None:
+                global_step = self.load_checkpoint(resume_from_checkpoint)
+                start_epoch = global_step // self._steps_per_epoch
+                resume_steps_in_epoch = global_step % self._steps_per_epoch
+
         log_loss_sum = log_l_recon_sum = log_l_sem_sum = log_gnorm_sum = 0.0
         log_micro_steps = 0
         last_grad_norm = 0.0
 
-        for epoch in range(cfg.epochs):
+        for epoch in range(start_epoch, cfg.epochs):
             self._core.train()
 
+            # Skip already-processed batches when resuming mid-epoch
+            if epoch == start_epoch and resume_steps_in_epoch > 0:
+                batches_to_skip = resume_steps_in_epoch * cfg.gradient_accumulation_steps
+                train_dl_epoch = self.accelerator.skip_first_batches(
+                    self._train_dl, batches_to_skip
+                )
+                steps_this_epoch = self._steps_per_epoch - resume_steps_in_epoch
+            else:
+                train_dl_epoch = self._train_dl
+                steps_this_epoch = self._steps_per_epoch
+
             epoch_bar = tqdm(
-                total=self._steps_per_epoch,
+                total=steps_this_epoch,
                 desc=f"Epoch {epoch + 1}/{cfg.epochs}",
                 disable=not self.accelerator.is_main_process,
                 dynamic_ncols=True,
             )
 
-            for batch in self._train_dl:
+            for batch in train_dl_epoch:
                 with self.accelerator.accumulate(self._core):
                     outputs = self._forward(batch)
                     loss = outputs["loss"]
@@ -279,6 +303,8 @@ class BottleneckTrainer:
                 if self.accelerator.sync_gradients:
                     # Advance the bar once per optimizer step
                     postfix: Dict[str, str] = {"loss": f"{loss.detach().item():.4f}"}
+                    if last_grad_norm:
+                        postfix["gnorm"] = f"{last_grad_norm:.3f}"
                     epoch_bar.set_postfix(postfix)
                     epoch_bar.update(1)
 
@@ -302,10 +328,11 @@ class BottleneckTrainer:
 
                     if global_step % cfg.save_steps == 0:
                         ckpt_dir = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
-                        self.save_checkpoint(ckpt_dir)
+                        self.save_checkpoint(ckpt_dir, global_step=global_step, epoch=epoch)
                         self._rotate_checkpoints()
 
             epoch_bar.close()
+            resume_steps_in_epoch = 0  # only skip batches in the first partial epoch
 
         self.accelerator.end_training()
 
@@ -458,39 +485,122 @@ class BottleneckTrainer:
 
         return sd
 
-    def save_checkpoint(self, output_dir: str, save_ema: bool = True):
-        """Save a checkpoint to output_dir/model.safetensors.
+    def save_checkpoint(
+        self, output_dir: str, global_step: int = 0, epoch: int = 0, save_ema: bool = True
+    ):
+        """Save a full training checkpoint (model + optimizer + scheduler + RNG + EMA).
 
-        With save_ema=True (default) the EMA weights are written.
+        accelerator.save_state() is a collective call — all processes must reach it.
+        Model weights (model.safetensors), EMA state, and trainer_state.json are
+        written by the main process only.
         """
         self.accelerator.wait_for_everyone()
-        if not self.accelerator.is_main_process:
-            return
-
         os.makedirs(output_dir, exist_ok=True)
 
-        if save_ema and self._ema is not None:
-            self._ema.store()
-            self._ema.copy_to()
-        try:
-            save_file(self._build_state_dict(), os.path.join(output_dir, "model.safetensors"))
-        finally:
-            if save_ema and self._ema is not None:
-                self._ema.restore()
+        # Saves _TrainableCore weights, optimizer, scheduler, and per-process RNG states.
+        # Works correctly with DeepSpeed sharded optimizer states.
+        self.accelerator.save_state(output_dir)
 
-        self._saved_checkpoints.append(output_dir)
+        if self.accelerator.is_main_process:
+            if self._ema is not None:
+                torch.save(
+                    self._ema.state_dict(),
+                    os.path.join(output_dir, "ema_state.pt"),
+                )
+
+            with open(os.path.join(output_dir, "trainer_state.json"), "w") as f:
+                json.dump({"global_step": global_step, "epoch": epoch}, f, indent=2)
+
+            # model.safetensors: our custom format with EMA applied (for inference)
+            if save_ema and self._ema is not None:
+                self._ema.store()
+                self._ema.copy_to()
+            try:
+                save_file(
+                    self._build_state_dict(),
+                    os.path.join(output_dir, "model.safetensors"),
+                )
+            finally:
+                if save_ema and self._ema is not None:
+                    self._ema.restore()
+
+            self._saved_checkpoints.append(output_dir)
 
     def save_model(self, output_dir: str, tokenizer=None):
-        """Save final model with EMA weights applied."""
-        self.save_checkpoint(output_dir, save_ema=True)
-        if tokenizer is not None and self.accelerator.is_main_process:
-            tokenizer.save_pretrained(output_dir)
+        """Save final model weights with EMA applied (no optimizer/scheduler state)."""
+        self.accelerator.wait_for_everyone()
+        if self.accelerator.is_main_process:
+            os.makedirs(output_dir, exist_ok=True)
+            if self._ema is not None:
+                self._ema.store()
+                self._ema.copy_to()
+            try:
+                save_file(
+                    self._build_state_dict(),
+                    os.path.join(output_dir, "model.safetensors"),
+                )
+            finally:
+                if self._ema is not None:
+                    self._ema.restore()
+            if tokenizer is not None:
+                tokenizer.save_pretrained(output_dir)
 
     def save_non_ema_model(self, output_dir: str, tokenizer=None):
-        """Save raw (non-EMA) weights for continued training."""
-        self.save_checkpoint(output_dir, save_ema=False)
-        if tokenizer is not None and self.accelerator.is_main_process:
-            tokenizer.save_pretrained(output_dir)
+        """Save final raw (non-EMA) weights for continued training."""
+        self.accelerator.wait_for_everyone()
+        if self.accelerator.is_main_process:
+            os.makedirs(output_dir, exist_ok=True)
+            save_file(
+                self._build_state_dict(),
+                os.path.join(output_dir, "model.safetensors"),
+            )
+            if tokenizer is not None:
+                tokenizer.save_pretrained(output_dir)
+
+    def load_checkpoint(self, checkpoint_dir: str) -> int:
+        """Load full training state from a checkpoint directory.
+
+        Restores model weights, optimizer, scheduler, RNG states, and EMA.
+        Returns the global_step at which the checkpoint was saved.
+        """
+        # Collective call — restores _TrainableCore, optimizer, scheduler, RNG
+        self.accelerator.load_state(checkpoint_dir)
+
+        if self._ema is not None:
+            ema_path = os.path.join(checkpoint_dir, "ema_state.pt")
+            if os.path.exists(ema_path):
+                self._ema.load_state_dict(
+                    torch.load(ema_path, map_location="cpu", weights_only=True)
+                )
+
+        with open(os.path.join(checkpoint_dir, "trainer_state.json")) as f:
+            state = json.load(f)
+        global_step = state["global_step"]
+
+        # Repopulate checkpoint list so rotation works correctly after resume
+        self._saved_checkpoints = sorted(
+            [
+                str(d) for d in Path(self.cfg.output_dir).glob("checkpoint-*")
+                if d.is_dir() and (d / "trainer_state.json").exists()
+            ],
+            key=lambda d: int(Path(d).name.split("-")[1]),
+        )
+
+        if self.accelerator.is_main_process:
+            tqdm.write(f"Resumed from {checkpoint_dir}  (global_step={global_step})")
+
+        return global_step
+
+    def _find_latest_checkpoint(self) -> Optional[str]:
+        """Return the path of the most recent checkpoint in output_dir, or None."""
+        candidates = sorted(
+            [
+                d for d in Path(self.cfg.output_dir).glob("checkpoint-*")
+                if d.is_dir() and (d / "trainer_state.json").exists()
+            ],
+            key=lambda d: int(d.name.split("-")[1]),
+        )
+        return str(candidates[-1]) if candidates else None
 
     def _rotate_checkpoints(self):
         """Remove the oldest checkpoint once save_total_limit is exceeded."""
