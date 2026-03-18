@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data.collators import ARDecoderCollator
 from src.data.datasets import load_text_dataset
 from src.eval.reconstruction_metrics import compute_metrics
-from src.models.bottleneck_ae import build_ae_components
+from src.models.bottleneck_ae import build_repr_encoder, build_ae_components, build_sem_proj, load_ae_weights, BottleneckAE
 from src.trainers import BottleneckTrainer
 from src.utils.config import load_config, save_config
 
@@ -44,25 +44,32 @@ def main():
     vocab_size = tokenizer.vocab_size
     pad_token_id = tokenizer.pad_token_id or 0
 
-    encoder, decoder, repr_encoder, latent_aug, lambda_sem = build_ae_components(
+    encoder, decoder, latent_aug, lambda_sem = build_ae_components(
         cfg, vocab_size, pad_token_id
     )
 
+    repr_encoder = build_repr_encoder(cfg.model)
+    sem_proj = build_sem_proj(encoder.d_model, repr_encoder.sent_dim)
+
+    autoencoder = BottleneckAE(encoder, decoder, latent_aug, sem_proj, lambda_sem)
+
+    if tc.init_from_checkpoint:
+        print(f"Initializing BottleneckAE from: {tc.init_from_checkpoint}")
+        load_ae_weights(tc.init_from_checkpoint, autoencoder)
+
     n_enc = sum(p.numel() for p in encoder.parameters())
     n_dec = sum(p.numel() for p in decoder.parameters())
+    n_sem_proj = sum(p.numel() for p in sem_proj.parameters())
     n_repr = sum(p.numel() for p in repr_encoder.parameters()) if repr_encoder else 0
-    print(f"Parameters:\nEncoder: {n_enc:,} trainable; Decoder: {n_dec:,} trainable; Repr: {n_repr:,} frozen.")
-    print(f"Total: {n_enc + n_dec:,} trainable / {n_enc + n_dec + n_repr:,} all parameters")
+    print(f"Parameters:\nEncoder: {n_enc:,} trainable; Decoder: {n_dec:,} trainable; SemProj: {n_sem_proj:,} trainable; Repr: {n_repr:,} frozen.")
+    print(f"Total: {n_enc + n_dec + n_sem_proj:,} trainable / {n_enc + n_dec + n_sem_proj + n_repr:,} all parameters")
     
     datasets = load_text_dataset(cfg.data)
     collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
 
     trainer = BottleneckTrainer(
-        encoder=encoder,
-        decoder=decoder,
+        autoencoder=autoencoder,
         repr_encoder=repr_encoder,
-        latent_aug=latent_aug,
-        lambda_sem=lambda_sem,
         train_dataset=datasets["train"],
         eval_dataset=datasets["validation"],
         data_collator=collator,

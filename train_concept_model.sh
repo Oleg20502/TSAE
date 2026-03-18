@@ -6,8 +6,7 @@ export CUDA_VISIBLE_DEVICES="0,1,2,3"
 NP=4
 
 accelerate launch --num_processes $NP --config_file ./accel_configs/fp32.yaml \
-    scripts/train_bottleneck.py \
-    --config configs/train/ae_mpnet_fineweb_noise.yaml \
-    # --resume_from_checkpoint outputs/noise/nl_4_rstd_0.1_sl_10/checkpoint-2000
+    scripts/train_concept_model.py \
+    --config configs/train/cm_fineweb.yaml
 
 echo "done"
