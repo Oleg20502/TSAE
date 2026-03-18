@@ -22,77 +22,8 @@ from transformers import get_constant_schedule_with_warmup
 
 from src.losses.reconstruction import reconstruction_loss
 from src.losses.semantic import semantic_consistency_loss
+from src.models.bottleneck_ae import BottleneckAE
 from src.utils.config import TrainConfig
-
-
-# ---------------------------------------------------------------------------
-# Trainable module (excludes repr_encoder)
-# ---------------------------------------------------------------------------
-
-class _TrainableCore(nn.Module):
-    """Training-time module: encoder + decoder + latent_aug + sem_proj.
-
-    repr_encoder is intentionally absent: it is frozen, contributes no
-    gradients, and must not be saved to checkpoints.
-    """
-
-    def __init__(
-        self,
-        encoder: nn.Module,
-        decoder: nn.Module,
-        latent_aug: nn.Module,
-        sem_proj: Optional[nn.Linear],
-        lambda_sem: float,
-    ):
-        super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.latent_aug = latent_aug
-        self.sem_proj = sem_proj
-        self.lambda_sem = lambda_sem
-
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-        decoder_input_ids: torch.Tensor,
-        labels: torch.Tensor,
-        decoder_attention_mask: Optional[torch.Tensor] = None,
-        sent_emb: Optional[torch.Tensor] = None,
-    ) -> Dict[str, torch.Tensor]:
-        """Encode → augment → decode → compute loss.
-
-        Args:
-            sent_emb: pre-computed sentence embedding from repr_encoder (detached).
-                      When None the semantic loss term is skipped.
-        """
-        z = self.encoder(input_ids, attention_mask)       # (B, L, D)
-        z_aug = self.latent_aug(z)                        # no-op during eval
-
-        logits = self.decoder(
-            latent_tokens=z_aug,
-            decoder_input_ids=decoder_input_ids,
-            decoder_attention_mask=decoder_attention_mask,
-        )
-
-        l_recon = reconstruction_loss(logits, labels)
-
-        if sent_emb is not None and self.sem_proj is not None:
-            z_sem = self.sem_proj(z.mean(dim=1))          # (B, D_s)
-            l_sem = semantic_consistency_loss(z_sem, sent_emb)
-            loss = l_recon + self.lambda_sem * l_sem
-            return {
-                "loss": loss,
-                "logits": logits,
-                "l_recon": l_recon.detach(),
-                "l_sem": l_sem.detach(),
-            }
-        else:
-            return {
-                "loss": l_recon,
-                "logits": logits,
-                "l_recon": l_recon.detach(),
-            }
 
 
 # ---------------------------------------------------------------------------
@@ -109,11 +40,8 @@ class BottleneckTrainer:
 
     def __init__(
         self,
-        encoder: nn.Module,
-        decoder: nn.Module,
+        autoencoder: BottleneckAE,
         repr_encoder: Optional[nn.Module],
-        latent_aug: nn.Module,
-        lambda_sem: float,
         train_dataset,
         eval_dataset,
         data_collator,
@@ -123,12 +51,7 @@ class BottleneckTrainer:
         self.cfg = train_config
         self.compute_metrics_fn = compute_metrics
 
-        # sem_proj lives here: it knows encoder dim and repr dim, both training-only
-        sem_proj: Optional[nn.Linear] = None
-        if repr_encoder is not None:
-            sem_proj = nn.Linear(encoder.d_model, repr_encoder.sent_dim)
-
-        self._core = _TrainableCore(encoder, decoder, latent_aug, sem_proj, lambda_sem)
+        self._core = autoencoder
 
         # repr_encoder is kept separate — frozen, on device, excluded from saves
         self._repr_encoder = repr_encoder
@@ -458,7 +381,7 @@ class BottleneckTrainer:
 
         The decoder's lm_head.weight is dropped when it is the same
         storage as tok_emb.weight so safetensors does not raise a
-        duplicate-pointer error. load_bottleneck_model re-ties the
+        duplicate-pointer error. load_ae_weights re-ties the
         weights on load.
         """
         core = self.accelerator.unwrap_model(self._core)

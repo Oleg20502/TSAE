@@ -26,6 +26,7 @@ model:
 
 train:
   output_dir: outputs/vavae_mpnet_nl_4_std_0.2_sl_10
+  init_from_checkpoint: null
   lr: 1.0e-4
   weight_decay: 0.01
   ema_decay: 0.999

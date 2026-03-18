@@ -1,6 +1,6 @@
 """Bottleneck autoencoder: lightweight inference module and training component builders."""
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 
 import torch
 import torch.nn as nn
@@ -10,28 +10,82 @@ from src.backbones.repr_embedder import BaseTextReprEncoder, CLSReprEncoder, STR
 from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
 from src.models.encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
-from src.utils.config import BottleneckExperimentConfig, load_config_from_paths
+from src.utils.config import BottleneckModelConfig, BottleneckExperimentConfig, load_config_from_paths
+from src.losses.reconstruction import reconstruction_loss
+from src.losses.semantic import semantic_consistency_loss
 
 
 class BottleneckAE(nn.Module):
-    """Inference-only bottleneck autoencoder.
+    """Autoencoder module: encoder + decoder + latent_aug + sem_proj.
 
-    Holds only encoder and decoder — the components needed at inference time.
-    Training-time components (repr_encoder, latent_aug, sem_proj) are the
-    responsibility of BottleneckTrainer and are never stored here.
+    repr_encoder is intentionally absent: it is frozen, contributes no
+    gradients, and must not be saved to checkpoints.
     """
 
-    def __init__(self, encoder: BottleneckEncoder, decoder: nn.Module):
+    def __init__(
+        self,
+        encoder: nn.Module,
+        decoder: nn.Module,
+        latent_aug: nn.Module,
+        sem_proj: Optional[nn.Module] = None,
+        lambda_sem: Optional[float] = None,
+    ):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
+        self.latent_aug = latent_aug
+        self.sem_proj = sem_proj
+        self.lambda_sem = lambda_sem or 0.0
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        decoder_input_ids: torch.Tensor,
+        labels: torch.Tensor,
+        decoder_attention_mask: Optional[torch.Tensor] = None,
+        sent_emb: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Encode → augment → decode → compute loss.
+
+        Args:
+            sent_emb: pre-computed sentence embedding from repr_encoder (detached).
+                      When None the semantic loss term is skipped.
+        """
+        z = self.encoder(input_ids, attention_mask)       # (B, L, D)
+        z_aug = self.latent_aug(z)                        # no-op during eval
+
+        logits = self.decoder(
+            latent_tokens=z_aug,
+            decoder_input_ids=decoder_input_ids,
+            decoder_attention_mask=decoder_attention_mask,
+        )
+
+        l_recon = reconstruction_loss(logits, labels)
+
+        if sent_emb is not None and self.sem_proj is not None:
+            z_sem = self.sem_proj(z.mean(dim=1))          # (B, D_s)
+            l_sem = semantic_consistency_loss(z_sem, sent_emb)
+            loss = l_recon + self.lambda_sem * l_sem
+            return {
+                "loss": loss,
+                "logits": logits,
+                "l_recon": l_recon.detach(),
+                "l_sem": l_sem.detach(),
+            }
+        else:
+            return {
+                "loss": l_recon,
+                "logits": logits,
+                "l_recon": l_recon.detach(),
+            }
 
     def encode(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """Encode text to bottleneck latent z of shape (B, n_latent_tokens, d_model)."""
+        """Encode text to latent z of shape (B, n_latent_tokens, d_model)."""
         return self.encoder(input_ids, attention_mask)
 
     @torch.no_grad()
@@ -43,7 +97,7 @@ class BottleneckAE(nn.Module):
         eos_token_id: int,
         max_length: int = 128,
     ) -> torch.Tensor:
-        """Greedy autoregressive decoding from the bottleneck latent.
+        """Greedy autoregressive decoding from the latent.
 
         Args:
             input_ids:       (B, T) encoder input token ids.
@@ -75,13 +129,77 @@ class BottleneckAE(nn.Module):
 # Component builders
 # ---------------------------------------------------------------------------
 
+def build_repr_encoder(
+    cfg: BottleneckModelConfig,
+    use_legacy_repr: bool = False,
+) -> BaseTextReprEncoder:
+        if use_legacy_repr:
+            return CLSReprEncoder(model_name=cfg.backbone_name)
+        else:
+            return STReprEncoder(model_name=cfg.backbone_name)
+
+
+def build_sem_proj(
+    d_model: int,
+    sent_dim: int,
+) -> nn.Linear:
+    return nn.Linear(d_model, sent_dim)
+
+def build_encoder(
+    cfg: BottleneckModelConfig,
+    vocab_size: int,
+    pad_token_id: int,
+) -> BottleneckEncoder:
+    return BottleneckEncoder(
+        vocab_size=vocab_size,
+        d_model=cfg.d_model,
+        n_latent_tokens=cfg.n_latent_tokens,
+        n_layers=cfg.encoder_layers,
+        n_heads=cfg.encoder_heads,
+        d_ff=cfg.encoder_ff_dim,
+        max_length=cfg.max_length,
+        dropout=cfg.encoder_dropout,
+        pad_token_id=pad_token_id,
+        normalize_latent=cfg.normalize_latent,
+    )
+
+
+def build_decoder(
+    cfg: BottleneckModelConfig,
+    vocab_size: int,
+    pad_token_id: int,
+) -> nn.Module:
+    if cfg.decoder_type == "autoregressive":
+        return AutoRegressiveDecoder(
+            vocab_size=vocab_size,
+            d_model=cfg.d_model,
+            n_layers=cfg.decoder_layers,
+            n_heads=cfg.decoder_heads,
+            d_ff=cfg.decoder_ff_dim,
+            max_length=cfg.max_length,
+            dropout=cfg.decoder_dropout,
+            pad_token_id=pad_token_id,
+        )
+    elif cfg.decoder_type == "parallel":
+        return ParallelLatentDecoder(
+            vocab_size=vocab_size,
+            d_model=cfg.d_model,
+            n_layers=cfg.decoder_layers,
+            n_heads=cfg.decoder_heads,
+            d_ff=cfg.decoder_ff_dim,
+            max_length=cfg.max_length,
+            dropout=cfg.decoder_dropout,
+            pad_token_id=pad_token_id,
+        )
+    else:
+        raise ValueError(f"Unknown decoder_type: {cfg.decoder_type}")
+
+
 def build_ae_components(
     cfg: BottleneckExperimentConfig,
     vocab_size: int,
     pad_token_id: int,
-    build_repr_encoder: bool = True,
-    use_legacy_repr: bool = False,
-) -> Tuple[BottleneckEncoder, nn.Module, Optional[BaseTextReprEncoder], LatentAugmentation, float]:
+) -> Tuple[BottleneckEncoder, nn.Module, LatentAugmentation, float]:
     """Build all components required for training.
 
     Returns:
@@ -89,51 +207,8 @@ def build_ae_components(
         repr_encoder is None when build_repr_encoder=False.
     """
     mc = cfg.model
-
-    repr_encoder: Optional[BaseTextReprEncoder] = None
-    if build_repr_encoder:
-        if use_legacy_repr:
-            repr_encoder = CLSReprEncoder(model_name=mc.backbone_name)
-        else:
-            repr_encoder = STReprEncoder(model_name=mc.backbone_name)
-
-    encoder = BottleneckEncoder(
-        vocab_size=vocab_size,
-        d_model=mc.d_model,
-        n_latent_tokens=mc.n_latent_tokens,
-        n_layers=mc.encoder_layers,
-        n_heads=mc.encoder_heads,
-        d_ff=mc.encoder_ff_dim,
-        max_length=mc.max_length,
-        dropout=mc.encoder_dropout,
-        pad_token_id=pad_token_id,
-        normalize_latent=mc.normalize_latent,
-    )
-
-    if mc.decoder_type == "autoregressive":
-        decoder: nn.Module = AutoRegressiveDecoder(
-            vocab_size=vocab_size,
-            d_model=mc.d_model,
-            n_layers=mc.decoder_layers,
-            n_heads=mc.decoder_heads,
-            d_ff=mc.decoder_ff_dim,
-            max_length=mc.max_length,
-            dropout=mc.decoder_dropout,
-            pad_token_id=pad_token_id,
-        )
-    elif mc.decoder_type == "parallel":
-        decoder = ParallelLatentDecoder(
-            vocab_size=vocab_size,
-            d_model=mc.d_model,
-            n_layers=mc.decoder_layers,
-            n_heads=mc.decoder_heads,
-            d_ff=mc.decoder_ff_dim,
-            max_length=mc.max_length,
-            dropout=mc.decoder_dropout,
-            pad_token_id=pad_token_id,
-        )
-    else:
-        raise ValueError(f"Unknown decoder_type: {mc.decoder_type}")
+    encoder = build_encoder(mc, vocab_size, pad_token_id)
+    decoder = build_decoder(mc, vocab_size, pad_token_id)
 
     latent_aug = LatentAugmentation(
         noise_std=mc.noise_std,
@@ -142,20 +217,51 @@ def build_ae_components(
         sigma_type=mc.sigma_type,
     )
 
-    return encoder, decoder, repr_encoder, latent_aug, mc.lambda_sem
+    return encoder, decoder, latent_aug, mc.lambda_sem
 
 
 # ---------------------------------------------------------------------------
 # Inference loader
 # ---------------------------------------------------------------------------
 
+def load_ae_weights(
+    checkpoint_path: str,
+    autoencoder: BottleneckAE,
+    device: str = "cpu",
+) -> None:
+    """Load encoder+decoder weights from a safetensors (or .pt) checkpoint in-place.
+
+    Use this for warm-starting: the models are already built with the correct
+    architecture; this function just populates their parameters from a previous
+    checkpoint.  Optimizer / scheduler state is NOT restored.
+    """
+    if checkpoint_path.endswith(".safetensors"):
+        from safetensors.torch import load_file
+        state = load_file(checkpoint_path, device=device)
+    else:
+        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+
+    missing, unexpected = autoencoder.load_state_dict(state, strict=False)
+    if unexpected:
+        print("Warning: unexpected keys in checkpoint:", unexpected)
+    if (
+        missing
+        and hasattr(autoencoder.decoder, "lm_head")
+        and hasattr(autoencoder.decoder, "tok_emb")
+        and "decoder.lm_head.weight" in missing
+    ):
+        autoencoder.decoder.lm_head.weight = autoencoder.decoder.tok_emb.weight
+        missing = [k for k in missing if k != "decoder.lm_head.weight"]
+    if missing:
+        print("Warning: missing keys (not loaded):", missing)
+
+
 def load_bottleneck_model(
     config_paths: List[str],
     checkpoint_path: str,
     device: str,
-    use_legacy_repr: bool = False,
 ):
-    """Rebuild a lightweight BottleneckAE (encoder + decoder) from config and checkpoint.
+    """Build and load BottleneckAE model from config and checkpoint.
 
     repr_encoder, latent_aug, and sem_proj are not loaded — they are
     training-only components that are not stored in checkpoints.
@@ -165,34 +271,11 @@ def load_bottleneck_model(
     vocab_size = tokenizer.vocab_size
     pad_token_id = tokenizer.pad_token_id or 0
 
-    encoder, decoder, _, _, _ = build_ae_components(
-        cfg, vocab_size, pad_token_id, build_repr_encoder=False
-    )
-    model = BottleneckAE(encoder, decoder)
+    encoder = build_encoder(cfg.model, vocab_size, pad_token_id)
+    decoder = build_decoder(cfg.model, vocab_size, pad_token_id)
+    sem_proj = build_sem_proj(encoder.d_model, encoder.d_model)
+    model = BottleneckAE(encoder, decoder, sem_proj, lambda_sem=cfg.model.lambda_sem)
 
-    if checkpoint_path.endswith(".safetensors"):
-        from safetensors.torch import load_file
-        state = load_file(checkpoint_path, device=device)
-    else:
-        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
-
-    # Only load encoder/decoder keys; sem_proj and any other training keys are ignored
-    enc_dec_state = {
-        k: v for k, v in state.items() if k.startswith(("encoder.", "decoder."))
-    }
-    missing, unexpected = model.load_state_dict(enc_dec_state, strict=False)
-    if unexpected:
-        print("Warning: unexpected keys in checkpoint:", unexpected)
-    # Re-tie lm_head weight when checkpoint omitted the duplicate key (safetensors)
-    if (
-        missing
-        and hasattr(model.decoder, "lm_head")
-        and hasattr(model.decoder, "tok_emb")
-        and "decoder.lm_head.weight" in missing
-    ):
-        model.decoder.lm_head.weight = model.decoder.tok_emb.weight
-        missing = [k for k in missing if k != "decoder.lm_head.weight"]
-    if missing:
-        print("Warning: missing keys (not loaded):", missing)
+    load_ae_weights(checkpoint_path, model, device=device)
 
     return model, tokenizer, cfg

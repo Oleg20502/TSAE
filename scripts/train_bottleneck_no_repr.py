@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data.collators import ARDecoderCollator
 from src.data.datasets import load_text_dataset
 from src.eval.reconstruction_metrics import compute_metrics
-from src.models.bottleneck_ae import build_ae_components
+from src.models.bottleneck_ae import build_repr_encoder, build_ae_components
 from src.trainers import BottleneckTrainer
 from src.utils.config import load_config, save_config
 
@@ -44,8 +44,8 @@ def main():
     vocab_size = tokenizer.vocab_size
     pad_token_id = tokenizer.pad_token_id or 0
 
-    encoder, decoder, _, latent_aug, lambda_sem = build_ae_components(
-        cfg, vocab_size, pad_token_id, build_repr_encoder=False
+    encoder, decoder, latent_aug, lambda_sem = build_ae_components(
+        cfg, vocab_size, pad_token_id
     )
     n_params = sum(p.numel() for p in encoder.parameters()) + sum(
         p.numel() for p in decoder.parameters()

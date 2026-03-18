@@ -7,6 +7,7 @@ NP=4
 
 accelerate launch --num_processes $NP --config_file ./accel_configs/fp32.yaml \
     scripts/train_bottleneck.py \
-    --config configs/train/ae_mpnet_fineweb_noise.yaml
+    --config configs/train/ae_mpnet_fineweb_noise.yaml \
+    # --resume_from_checkpoint outputs/noise/nl_4_rstd_0.1_sl_10/checkpoint-2000
 
 echo "done"

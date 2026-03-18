@@ -47,9 +47,10 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    """Configuration for Stage-1 autoencoder training."""
+    """Configuration for autoencoder training."""
 
-    output_dir: str = "outputs/stage1"
+    output_dir: str = "outputs/ae"
+    init_from_checkpoint: Optional[str] = None
 
     # Optimiser
     lr: float = 1e-4
@@ -84,7 +85,7 @@ class TrainConfig:
 
 @dataclass
 class EvalConfig:
-    """Configuration for Stage-1 evaluation."""
+    """Configuration for autoencoder evaluation."""
 
     checkpoint_path: str = ""
     batch_size: int = 64

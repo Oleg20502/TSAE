@@ -176,6 +176,7 @@ def main():
         if not args.config or not args.checkpoint:
             raise SystemExit("--config and --checkpoint are required for model-type=bottleneck")
 
+        # FIXME: wrong load_bottleneck_model function call
         model, tokenizer, cfg = load_bottleneck_model(
             config_paths=args.config,
             checkpoint_path=args.checkpoint,
