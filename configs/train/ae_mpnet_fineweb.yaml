@@ -2,7 +2,7 @@ model:
   backbone_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
   
-  n_latent_tokens: 1
+  n_latent_tokens: 2
   d_model: 768
   max_length: 16
   noise_std: 0.05
@@ -18,22 +18,22 @@ model:
   encoder_dropout: 0.1
   
   # decoder
-  decoder_type: "autoregressive"
+  decoder_type: "parallel"
   decoder_layers: 6
   decoder_heads: 12
   decoder_ff_dim: 3072
   decoder_dropout: 0.1
 
 train:
-  output_dir: outputs/ae_mpnet_nl_1_rstd_0.05_sl_10
+  output_dir: outputs/test
   init_from_checkpoint: null
   lr: 1.0e-4
   weight_decay: 0.01
   ema_decay: 0.999
   epochs: 100
   warmup_steps: 1000
-  batch_size: 128
-  gradient_accumulation_steps: 4
+  batch_size: 16
+  gradient_accumulation_steps: 16
   max_grad_norm: 1.0
   logging_steps: 100
   eval_steps: 1000

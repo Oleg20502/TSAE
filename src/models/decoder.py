@@ -210,8 +210,8 @@ class ParallelLatentDecoder(nn.Module):
             [DecoderBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
         )
 
-        self.causal_mask = torch.zeros(self.max_length, self.max_length, dtype=torch.bool) # No causality
-        self.register_buffer("causal_mask", self.causal_mask)
+        causal_mask = torch.zeros(self.max_length, self.max_length, dtype=torch.bool) # No causality
+        self.register_buffer("causal_mask", causal_mask)
 
         self.ln_f = nn.LayerNorm(d_model)
 
