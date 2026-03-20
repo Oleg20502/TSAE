@@ -70,6 +70,9 @@ class TrainConfig:
     save_steps: int = 1000
     save_total_limit: int = 3
 
+    metric_for_best_model: Optional[str] = None
+    greater_is_better: Optional[bool] = None  # None → infer from metric name
+
     # Misc
     ema_decay: float = 0.999
     fp16: bool = False

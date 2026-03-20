@@ -39,6 +39,9 @@ train:
   eval_steps: 1000
   save_steps: 1000
   save_total_limit: 2
+  
+  metric_for_best_model: eval/loss
+  greater_is_better: null  # null → infer from name (loss ↓, accuracy ↑)
   fp16: false
   bf16: false
   dataloader_num_workers: 16
