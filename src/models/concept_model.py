@@ -19,6 +19,9 @@ import torch.nn.functional as F
 
 from src.utils.config import ConceptModelConfig
 
+from transformers.models.gpt2.modeling_gpt2 import GPT2Model, GPT2LMHeadModel
+from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
+
 
 # ---------------------------------------------------------------------------
 # RMSNorm
@@ -305,6 +308,64 @@ class ConceptModel(nn.Module):
 # GPT-2 (or any HF causal-LM) wrapper
 # ---------------------------------------------------------------------------
 
+class CustomGPT2Model(GPT2Model):
+    """
+    Custom GPT-2 model adapted to use block-level causal masking.
+    Intended to use as backbone for the Concept Model.    
+    """
+    
+    def forward(
+        self,
+        inputs_embeds, # (B, N*n, d_ae)
+        attention_mask=None,
+        past_key_values=None,
+        use_cache=None,
+        **kwargs,
+    ):
+
+        seq_len = inputs_embeds.shape[-2]
+
+        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+        position_ids = torch.arange(
+            seq_len, device=inputs_embeds.device
+        ) + past_seen_tokens
+        position_ids = position_ids.unsqueeze(0)
+
+        position_embeds = self.wpe(position_ids)
+        hidden_states = inputs_embeds + position_embeds.to(inputs_embeds.device)
+
+        hidden_states = self.drop(hidden_states)
+        output_shape = (-1,) + (seq_len,) + (hidden_states.size(-1),)
+
+        for block in self.h:
+            hidden_states = block(
+                hidden_states,
+                past_key_values,
+                attention_mask=attention_mask,
+                use_cache=use_cache,
+                position_ids=position_ids,
+                **kwargs,
+            )
+
+        hidden_states = self.ln_f(hidden_states)
+        hidden_states = hidden_states.view(output_shape)
+
+        return BaseModelOutputWithPastAndCrossAttentions(
+            last_hidden_state=hidden_states,
+            past_key_values=past_key_values if use_cache else None,
+        )
+
+
+class CustomGPT2LMHeadModel(GPT2LMHeadModel):
+    def __init__(self, config):
+        super().__init__(config)
+        self.transformer = CustomGPT2Model(config)
+        self.post_init()
+    
+    def forwrd(self, *args, **kwargs):
+        return self.transformer(*args, **kwargs)
+
+
 class ConceptModelGPT2(nn.Module):
     """Wraps a pretrained HuggingFace causal language model as a Concept Model.
 
@@ -324,19 +385,26 @@ class ConceptModelGPT2(nn.Module):
         max_seq_len: Optional[int] = None,
     ):
         super().__init__()
-        from transformers import AutoConfig, GPT2Model
+        from transformers import AutoConfig
 
         self.d_ae = d_ae
 
         backbone_cfg = AutoConfig.from_pretrained(pretrained_name)
         d_backbone = backbone_cfg.hidden_size
 
+        model = CustomGPT2LMHeadModel(backbone_cfg)
+
+        pretrained = GPT2LMHeadModel.from_pretrained("openai-community/gpt2")
+        missing, unexpected = model.load_state_dict(pretrained.state_dict(), strict=False)
+
         if max_seq_len is not None and max_seq_len > backbone_cfg.max_position_embeddings:
             backbone_cfg.max_position_embeddings = max_seq_len
 
         self.input_norm  = nn.LayerNorm(d_ae) # encoder uses LayerNorm
         self.input_proj  = nn.Linear(d_ae, d_backbone, bias=False)
-        self.backbone    = GPT2Model.from_pretrained(pretrained_name, config=backbone_cfg)
+
+        self.backbone    = model.transformer
+
         self.output_proj = nn.Linear(d_backbone, d_ae, bias=False)
         self.output_norm = nn.LayerNorm(d_ae) # encoder uses LayerNorm
 
@@ -351,9 +419,17 @@ class ConceptModelGPT2(nn.Module):
         Returns:
             ``(B, N*n, d_ae)`` — predicted next-latent sequence.
         """
+
+        B, T, _ = x.shape
+        n = self.n_latent_tokens
+        n_chunks = T // n
+
         x = self.input_norm(x)
         embeds = self.input_proj(x)           # (B, T, d_backbone)
-        out = self.backbone(inputs_embeds=embeds).last_hidden_state  # (B, T, d_backbone)
+
+        attention_mask = make_block_causal_mask(n_chunks, n, x.device)  # (1, 1, T, T)
+
+        out = self.backbone(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state  # (B, T, d_backbone)
         out = self.output_proj(out)           # (B, T, d_ae)
         out = self.output_norm(out)
         return out

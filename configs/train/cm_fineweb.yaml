@@ -1,6 +1,6 @@
 model:
-  ae_config_path: "configs/train/ae_mpnet_fineweb_noise.yaml"
-  ae_checkpoint_path: "outputs/noise/nl_4_rstd_0.1_sl_10/final/model.safetensors"
+  ae_config_path: "/home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml"
+  ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-906000/model.safetensors
 
   cm_type: "custom"
 
@@ -14,7 +14,7 @@ model:
   lambda_mse: 0.1
 
 train:
-  output_dir: "outputs/concept_model/cm_custom_d768"
+  output_dir: "outputs/concept_model/test"
   lr: 1.0e-4
   weight_decay: 0.01
   ema_decay: 0.9999
@@ -34,13 +34,9 @@ train:
   report_to: tensorboard
 
 data:
-  # Pre-processed CM sequences (built by prepare_cm_dataset.py).
-  # Each row contains n_chunks consecutive chunks from the same FineWeb document.
-  preprocessed_dir: "/home/okashurin/okashurin/datasets/fineweb_cm_sequences_n64"
-
+  preprocessed_dir: "/home/okashurin/okashurin/datasets/fineweb_sequences_nc_32_ml_16"
   n_chunks: 32
   chunk_size_tokens: 16
   gpt2_tokenizer_name: gpt2
   text_column: "text"
-  num_val_samples: 1000
   seed: 42

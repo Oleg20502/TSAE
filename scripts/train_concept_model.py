@@ -16,7 +16,6 @@ from dataclasses import asdict
 from pathlib import Path
 
 import yaml
-from transformers import AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
