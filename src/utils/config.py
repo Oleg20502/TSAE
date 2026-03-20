@@ -211,16 +211,35 @@ def save_config(cfg: BottleneckExperimentConfig, path: str | Path) -> None:
 class ConceptDataConfig:
     """Configuration for the Concept Model data pipeline.
 
-    Points at the same pre-chunked FineWeb dataset used by the AE, but
-    groups ``n_chunks`` consecutive chunks into a single CM training sequence.
+    Each CM training sequence consists of ``n_chunks`` consecutive 16-token
+    chunks extracted from the same FineWeb document.  Preprocessing is done
+    once by ``scripts/prepare_cm_dataset.py`` and the result is saved to
+    ``preprocessed_dir``.  Training then loads directly from disk.
     """
 
-    preprocessed_dir: Optional[str] = None
-    n_chunks: int = 64
+    # ---- Source dataset (used by prepare_cm_dataset.py) ----
+    dataset_name: str = "HuggingFaceFW/fineweb"
+    dataset_config: str = "sample-10BT"
     text_column: str = "text"
-    num_val_samples: Optional[int] = 1000
+    cache_dir: Optional[str] = None        # HuggingFace datasets cache root
+
+    # ---- Chunking ----
+    n_chunks: int = 64                     # consecutive chunks per CM sequence
+    chunk_size_tokens: int = 16            # GPT-2 tokens per chunk
+    gpt2_tokenizer_name: str = "gpt2"
+    drop_incomplete_chunks: bool = True
+
+    # ---- Pre-processed sequences (written by prepare_cm_dataset.py) ----
+    preprocessed_dir: Optional[str] = None
+
+    # ---- Dataset limits ----
+    max_docs: Optional[int] = None         # cap documents processed (None = all)
+    num_val_samples: Optional[int] = None
     seed: int = 42
-    dataloader_num_workers: int = 4
+
+    # ---- Processing ----
+    prepare_num_proc: Optional[int] = None
+    preprocess_batch_size: int = 1000
 
 
 @dataclass

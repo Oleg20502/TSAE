@@ -1,18 +1,14 @@
 """Concept Model: transformer that predicts the next AE latent in latent space.
 
 Supports two variants:
-  - ``ConceptModel``:     custom scratch transformer with RoPE, RMSNorm, SwiGLU,
-                          and block-level causal masking.
+  - ``ConceptModel``:     custom scratch transformer with block-level causal masking.
   - ``ConceptModelGPT2``: wraps a pretrained HuggingFace causal-LM backbone
                           (e.g. GPT-2) with input/output projections.
                           Uses standard token-level causal masking from the backbone.
 
 Both variants accept latent sequences of shape ``(B, N*n, d_ae)`` and return
-predicted latent sequences of the same shape.  Input RMSNorm and output RMSNorm
-are included inside each variant.
+predicted latent sequences of the same shape.
 """
-
-from __future__ import annotations
 
 import math
 from typing import Optional
@@ -128,17 +124,14 @@ def make_block_causal_mask(
 
 
 # ---------------------------------------------------------------------------
-# Single transformer block (custom CM)
+# Attention
 # ---------------------------------------------------------------------------
 
-class ConceptModelBlock(nn.Module):
-    """One pre-norm transformer block: RMSNorm → MHA (RoPE) → RMSNorm → SwiGLU."""
-
+class Attention(nn.Module):
     def __init__(
         self,
         d_model: int,
         n_heads: int,
-        d_ff: int,
         rope: RotaryEmbedding,
         dropout: float = 0.0,
     ):
@@ -146,23 +139,19 @@ class ConceptModelBlock(nn.Module):
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.n_heads  = n_heads
         self.head_dim = d_model // n_heads
-        self.scale    = self.head_dim ** -0.5
+        self.dropout  = dropout
 
-        self.norm1 = RMSNorm(d_model)
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.q_proj   = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj   = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj   = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
-        self.attn_drop = nn.Dropout(dropout)
-
-        self.norm2 = RMSNorm(d_model)
-        self.ffn   = SwiGLUFFN(d_model, d_ff, dropout)
 
         self.rope = rope  # shared across all blocks
-
+    
     def _split_heads(self, x: torch.Tensor) -> torch.Tensor:
         B, T, _ = x.shape
-        return x.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)  # (B, H, T, D)
+        return x.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)  # (B, H, T, D_h)
+
 
     def forward(
         self,
@@ -173,9 +162,9 @@ class ConceptModelBlock(nn.Module):
         Args:
             x:         ``(B, T, d_model)``
             attn_mask: additive mask ``(1, 1, T, T)`` or compatible broadcastable shape.
+                       Passed directly to ``F.scaled_dot_product_attention`` as
+                       ``attn_mask``, so 0 = attend, ``-inf`` = masked.
         """
-        residual = x
-        x = self.norm1(x)
         B, T, _ = x.shape
 
         q = self._split_heads(self.q_proj(x))  # (B, H, T, D_h)
@@ -185,16 +174,52 @@ class ConceptModelBlock(nn.Module):
         q = self.rope(q, T)
         k = self.rope(k, T)
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # (B, H, T, T)
-        if attn_mask is not None:
-            scores = scores + attn_mask
-        weights = F.softmax(scores, dim=-1)
-        weights = self.attn_drop(weights)
+        # Uses Flash Attention automatically on supported hardware/dtypes.
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout if self.training else 0.0,
+        )  # (B, H, T, D_h)
 
-        out = torch.matmul(weights, v)                         # (B, H, T, D_h)
         out = out.transpose(1, 2).contiguous().view(B, T, -1)  # (B, T, d_model)
-        x = residual + self.out_proj(out)
+        return self.out_proj(out)
 
+
+# ---------------------------------------------------------------------------
+# Single transformer block (custom CM)
+# ---------------------------------------------------------------------------
+
+
+class ConceptModelBlock(nn.Module):
+    """One pre-norm transformer block: Norm → MHA (RoPE) → Norm → SwiGLU."""
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        d_ff: int,
+        rope: RotaryEmbedding,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(d_model)
+        self.attention = Attention(d_model, n_heads, rope, dropout)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.ffn = SwiGLUFFN(d_model, d_ff, dropout)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            x:         ``(B, T, d_model)``
+            attn_mask: additive mask ``(1, 1, T, T)`` or compatible broadcastable shape.
+                       Passed directly to ``F.scaled_dot_product_attention`` as
+                       ``attn_mask``, so 0 = attend, ``-inf`` = masked.
+        """
+        x = x + self.attention(self.norm1(x), attn_mask)
         x = x + self.ffn(self.norm2(x))
         return x
 
@@ -210,8 +235,6 @@ class ConceptModel(nn.Module):
     ``d_model != d_ae`` linear projections are added. Block-level causal
     masking is used so that all ``n`` tokens within the same latent block
     attend to each other freely, but only to tokens in earlier blocks.
-
-    The input RMSNorm and output RMSNorm are part of this module.
     """
 
     def __init__(
@@ -230,7 +253,8 @@ class ConceptModel(nn.Module):
         self.d_ae           = d_ae
         self.n_latent_tokens = n_latent_tokens
 
-        self.input_norm  = RMSNorm(d_ae)
+        # self.input_norm  = RMSNorm(d_ae)  # encoder uses LayerNorm
+        self.input_norm = nn.LayerNorm(d_ae)
         self.input_proj  = nn.Linear(d_ae, d_model, bias=False) if d_ae != d_model else nn.Identity()
 
         rope = RotaryEmbedding(d_model // n_heads, base=rope_base, max_seq_len=max_seq_len)
@@ -240,7 +264,8 @@ class ConceptModel(nn.Module):
         ])
 
         self.output_proj = nn.Linear(d_model, d_ae, bias=False) if d_ae != d_model else nn.Identity()
-        self.output_norm = RMSNorm(d_ae)
+        # self.output_norm = RMSNorm(d_ae)  # encoder uses LayerNorm
+        self.output_norm = nn.LayerNorm(d_ae)
 
         self._init_weights()
 
@@ -309,12 +334,11 @@ class ConceptModelGPT2(nn.Module):
         if max_seq_len is not None and max_seq_len > backbone_cfg.max_position_embeddings:
             backbone_cfg.max_position_embeddings = max_seq_len
 
-        self.input_norm  = RMSNorm(d_ae)
+        self.input_norm  = nn.LayerNorm(d_ae) # encoder uses LayerNorm
         self.input_proj  = nn.Linear(d_ae, d_backbone, bias=False)
         self.backbone    = GPT2Model.from_pretrained(pretrained_name, config=backbone_cfg)
-        # Drop the built-in wte/wpe — we supply embeddings directly via inputs_embeds
         self.output_proj = nn.Linear(d_backbone, d_ae, bias=False)
-        self.output_norm = RMSNorm(d_ae)
+        self.output_norm = nn.LayerNorm(d_ae) # encoder uses LayerNorm
 
         nn.init.xavier_uniform_(self.input_proj.weight)
         nn.init.xavier_uniform_(self.output_proj.weight)

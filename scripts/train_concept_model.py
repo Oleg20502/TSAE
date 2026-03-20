@@ -20,15 +20,12 @@ from transformers import AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.data.concept_collators import ChunkGroupDataset, CMCollator
-from src.data.datasets import load_text_dataset
+from src.data.concept_collators import CMCollator
+from src.data.concept_datasets import load_cm_dataset
 from src.models.bottleneck_ae import load_bottleneck_model
 from src.models.concept_model import build_concept_model
 from src.trainers.concept_trainer import ConceptTrainer
-from src.utils.config import (
-    DataConfig,
-    load_concept_config_from_paths,
-)
+from src.utils.config import load_concept_config_from_paths
 
 
 def _save_concept_config(cfg, path: Path) -> None:
@@ -104,27 +101,14 @@ def main():
     # ------------------------------------------------------------------
     # Data
     # ------------------------------------------------------------------
-    # Reuse AE data loading — points at same preprocessed FineWeb chunks.
-    # We construct a minimal DataConfig for load_text_dataset.
-    data_cfg = DataConfig(
-        preprocessed_dir=dc.preprocessed_dir,
-        text_column=dc.text_column,
-        num_val_samples=dc.num_val_samples,
-        seed=dc.seed,
-    )
-    datasets = load_text_dataset(data_cfg)
-
-    train_ds = ChunkGroupDataset(
-        datasets["train"], n_chunks=dc.n_chunks, text_column=dc.text_column
-    )
-    eval_ds = ChunkGroupDataset(
-        datasets["validation"], n_chunks=dc.n_chunks, text_column=dc.text_column
-    )
+    datasets = load_cm_dataset(dc)
+    train_ds = datasets["train"]
+    eval_ds  = datasets["validation"]
 
     print(
         f"Dataset: {len(train_ds):,} train sequences  "
         f"{len(eval_ds):,} eval sequences  "
-        f"(N={dc.n_chunks} chunks each)"
+        f"(N={dc.n_chunks} chunks × {dc.chunk_size_tokens} GPT-2 tokens each)"
     )
 
     collator = CMCollator(tokenizer=ae_tokenizer, max_length=ae_max_length)

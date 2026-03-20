@@ -1,0 +1,25 @@
+# Run once:
+#   python scripts/prepare_cm_dataset.py \
+#       --config configs/preprocess/cm_fineweb_preprocess.yaml
+#
+# Then set data.preprocessed_dir in your training config to the value below.
+
+data:
+  dataset_name: HuggingFaceFW/fineweb
+  dataset_config: sample-10BT
+  text_column: text
+  cache_dir: /home/okashurin/okashurin/datasets/
+
+  n_chunks: 32
+  chunk_size_tokens: 16
+  gpt2_tokenizer_name: gpt2
+  drop_incomplete_chunks: true
+
+  preprocessed_dir: /home/okashurin/okashurin/datasets/fineweb_sequences_nc_32_ml_16
+
+  max_docs: null
+  num_val_samples: 10000
+  seed: 42
+
+  prepare_num_proc: 32
+  preprocess_batch_size: 2000
