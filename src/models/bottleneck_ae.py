@@ -26,8 +26,8 @@ class BottleneckAE(nn.Module):
         self,
         encoder: nn.Module,
         decoder: nn.Module,
-        latent_aug: nn.Module,
         sem_proj: Optional[nn.Module] = None,
+        latent_aug: Optional[nn.Module] = None,
         lambda_sem: Optional[float] = None,
     ):
         super().__init__()
@@ -241,6 +241,8 @@ def load_ae_weights(
     else:
         state = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
+    state = {k: v for k, v in state.items() if not k.startswith("repr_encoder")}
+
     missing, unexpected = autoencoder.load_state_dict(state, strict=False)
     if unexpected:
         print("Warning: unexpected keys in checkpoint:", unexpected)
@@ -274,7 +276,13 @@ def load_bottleneck_model(
     encoder = build_encoder(cfg.model, vocab_size, pad_token_id)
     decoder = build_decoder(cfg.model, vocab_size, pad_token_id)
     sem_proj = build_sem_proj(encoder.d_model, encoder.d_model)
-    model = BottleneckAE(encoder, decoder, sem_proj, lambda_sem=cfg.model.lambda_sem)
+    model = BottleneckAE(
+        encoder=encoder,
+        decoder=decoder,
+        latent_aug = None,
+        sem_proj=sem_proj,
+        lambda_sem=cfg.model.lambda_sem
+    )
 
     load_ae_weights(checkpoint_path, model, device=device)
 
