@@ -130,13 +130,13 @@ class BottleneckAE(nn.Module):
 # ---------------------------------------------------------------------------
 
 def build_repr_encoder(
-    cfg: BottleneckModelConfig,
+    backbone_name: str,
     use_legacy_repr: bool = False,
 ) -> BaseTextReprEncoder:
         if use_legacy_repr:
-            return CLSReprEncoder(model_name=cfg.backbone_name)
+            return CLSReprEncoder(model_name=backbone_name)
         else:
-            return STReprEncoder(model_name=cfg.backbone_name)
+            return STReprEncoder(model_name=backbone_name)
 
 
 def build_sem_proj(
@@ -203,8 +203,7 @@ def build_ae_components(
     """Build all components required for training.
 
     Returns:
-        (encoder, decoder, repr_encoder, latent_aug, lambda_sem)
-        repr_encoder is None when build_repr_encoder=False.
+        (encoder, decoder, latent_aug, lambda_sem)
     """
     mc = cfg.model
     encoder = build_encoder(mc, vocab_size, pad_token_id)
@@ -275,12 +274,14 @@ def load_bottleneck_model(
 
     encoder = build_encoder(cfg.model, vocab_size, pad_token_id)
     decoder = build_decoder(cfg.model, vocab_size, pad_token_id)
+    # FIXME: the output should be sent_dim size. But no sent_dim in the config
     sem_proj = build_sem_proj(encoder.d_model, encoder.d_model)
+
     model = BottleneckAE(
         encoder=encoder,
         decoder=decoder,
-        latent_aug = None,
         sem_proj=sem_proj,
+        latent_aug=None,
         lambda_sem=cfg.model.lambda_sem
     )
 

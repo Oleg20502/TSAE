@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data.collators import ARDecoderCollator
 from src.data.datasets import load_text_dataset
 from src.eval.reconstruction_metrics import compute_metrics
-from src.models.bottleneck_ae import build_repr_encoder, build_ae_components
+from src.models.bottleneck_ae import build_ae_components
 from src.trainers import BottleneckTrainer
 from src.utils.config import load_config, save_config
 
