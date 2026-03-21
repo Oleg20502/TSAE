@@ -11,22 +11,22 @@ model:
   rope_base: 10000.0
   dropout: 0.1
 
-  lambda_mse: 1.0
+  lambda_mse: 0.1
 
 train:
-  output_dir: "outputs/concept_model/test_no_ce"
-  init_from_checkpoint: outputs/concept_model/test_no_recon/checkpoint-84000/model.safetensors
+  output_dir: "outputs/concept_model/small_ds/mse_0.1"
+  init_from_checkpoint: null
   lr: 1.0e-4
   weight_decay: 0.01
   ema_decay: 0.9999
-  epochs: 100
-  warmup_steps: 1000
+  epochs: 1000
+  warmup_steps: 100
   batch_size: 8
   gradient_accumulation_steps: 4
   max_grad_norm: 1.0
-  logging_steps: 100
-  eval_steps: 1000
-  save_steps: 1000
+  logging_steps: 10
+  eval_steps: 100
+  save_steps: 100
   save_total_limit: 2
   fp16: false
   bf16: false
@@ -35,9 +35,8 @@ train:
   report_to: tensorboard
 
 data:
-  preprocessed_dir: "/home/okashurin/okashurin/datasets/fineweb_sequences_nc_32_ml_16"
+  preprocessed_dir: "/home/okashurin/okashurin/datasets/fineweb_sequences_nc_32_ml_16_small"
   n_chunks: 32
   chunk_size_tokens: 16
-  gpt2_tokenizer_name: gpt2
   text_column: "text"
   seed: 42
