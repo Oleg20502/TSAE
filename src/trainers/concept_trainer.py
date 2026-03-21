@@ -13,8 +13,6 @@ Structural notes:
   ``BottleneckTrainer`` exactly.
 """
 
-from __future__ import annotations
-
 import json
 import math
 import os
@@ -451,11 +449,13 @@ class ConceptTrainer:
         count    = self.accelerator.reduce(count,    reduction="sum")
 
         eval_loss = (loss_acc / count).item()
+        eval_ce = (ce_acc / count).item()
+        eval_mse = (mse_acc / count).item()
         metrics: Dict[str, float] = {
             "eval/loss":       eval_loss,
-            "eval/l_ce":       (ce_acc  / count).item(),
-            "eval/l_mse":      (mse_acc / count).item(),
-            "eval/perplexity": math.exp(min(eval_loss, 20)),
+            "eval/l_ce":       eval_ce,
+            "eval/l_mse":      eval_mse,
+            "eval/perplexity": math.exp(min(eval_ce, 20)),
         }
 
         self.accelerator.log(metrics, step=step)

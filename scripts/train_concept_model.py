@@ -8,6 +8,9 @@ Usage:
     accelerate launch scripts/train_concept_model.py --config configs/train/cm_fineweb.yaml
     accelerate launch scripts/train_concept_model.py --config configs/train/cm_fineweb.yaml \
         --resume_from_checkpoint latest
+
+Warm-start CM weights only (fresh optimizer): set ``train.init_from_checkpoint`` in YAML to a
+``model.safetensors`` path. Ignored when ``--resume_from_checkpoint`` is passed.
 """
 
 import argparse
@@ -22,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data.concept_collators import CMCollator
 from src.data.concept_datasets import load_cm_dataset
 from src.models.bottleneck_ae import load_bottleneck_model
-from src.models.concept_model import build_concept_model
+from src.models.concept_model import build_concept_model, load_concept_weights
 from src.trainers.concept_trainer import ConceptTrainer
 from src.utils.config import load_concept_config_from_paths
 
@@ -86,6 +89,16 @@ def main():
     # Build Concept Model
     # ------------------------------------------------------------------
     concept_model = build_concept_model(mc, d_ae=d_ae, n_latent_tokens=n_latent_tokens)
+
+    if tc.init_from_checkpoint:
+        if args.resume_from_checkpoint is not None:
+            print(
+                "Skipping train.init_from_checkpoint because --resume_from_checkpoint is set "
+                "(checkpoint load will define weights)."
+            )
+        else:
+            print(f"Warm-starting Concept Model from: {tc.init_from_checkpoint}")
+            load_concept_weights(tc.init_from_checkpoint, concept_model)
 
     n_cm = sum(p.numel() for p in concept_model.parameters())
     n_ae = sum(p.numel() for p in ae_encoder.parameters()) + sum(

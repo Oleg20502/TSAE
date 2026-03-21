@@ -1,6 +1,6 @@
 model:
   ae_config_path: "/home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml"
-  ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-906000/model.safetensors
+  ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-925000/model.safetensors
 
   cm_type: "custom"
 
@@ -11,10 +11,11 @@ model:
   rope_base: 10000.0
   dropout: 0.1
 
-  lambda_mse: 0.1
+  lambda_mse: 1.0
 
 train:
-  output_dir: "outputs/concept_model/test"
+  output_dir: "outputs/concept_model/test_no_ce"
+  init_from_checkpoint: outputs/concept_model/test_no_recon/checkpoint-84000/model.safetensors
   lr: 1.0e-4
   weight_decay: 0.01
   ema_decay: 0.9999

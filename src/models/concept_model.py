@@ -10,7 +10,6 @@ Both variants accept latent sequences of shape ``(B, N*n, d_ae)`` and return
 predicted latent sequences of the same shape.
 """
 
-import math
 from typing import Optional
 
 import torch
@@ -467,3 +466,38 @@ def build_concept_model(cfg: ConceptModelConfig, d_ae: int, n_latent_tokens: int
             d_ae=d_ae,
             pretrained_name=cfg.cm_type,
         )
+
+
+def load_concept_weights(
+    checkpoint_path: str,
+    concept_model: nn.Module,
+    device: str = "cpu",
+) -> None:
+    """Load Concept Model weights from safetensors or PyTorch ``.pt`` in-place.
+
+    Checkpoints written by ``ConceptTrainer`` use keys prefixed with
+    ``concept_model.``; those prefixes are stripped before
+    ``load_state_dict``. If no such keys exist, the full dict is loaded
+    (useful for raw state exports).
+
+    Does not restore optimizer / scheduler — use ``resume_from_checkpoint``
+    for full training state.
+    """
+    if checkpoint_path.endswith(".safetensors"):
+        from safetensors.torch import load_file
+
+        state = load_file(checkpoint_path, device=device)
+    else:
+        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+
+    prefix = "concept_model."
+    if any(k.startswith(prefix) for k in state):
+        inner = {k[len(prefix) :]: v for k, v in state.items() if k.startswith(prefix)}
+    else:
+        inner = dict(state)
+
+    missing, unexpected = concept_model.load_state_dict(inner, strict=False)
+    if unexpected:
+        print("Warning: unexpected keys in checkpoint:", unexpected)
+    if missing:
+        print("Warning: missing keys (not loaded):", missing)
