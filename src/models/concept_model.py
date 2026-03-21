@@ -10,7 +10,7 @@ Both variants accept latent sequences of shape ``(B, N*n, d_ae)`` and return
 predicted latent sequences of the same shape.
 """
 
-from typing import Optional
+from typing import List, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -19,7 +19,6 @@ import torch.nn.functional as F
 from src.utils.config import ConceptModelConfig
 
 from transformers.models.gpt2.modeling_gpt2 import GPT2Model, GPT2LMHeadModel
-from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +122,56 @@ def make_block_causal_mask(
         torch.full((total, total), float("-inf"), device=device),
     )
     return mask.unsqueeze(0).unsqueeze(0)  # (1, 1, N*n, N*n)
+
+
+def make_variable_block_causal_mask(
+    block_ids: torch.Tensor,
+    dtype: torch.dtype,
+    merge_key_padding_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Additive attention mask from per-position block indices.
+
+    Key ``j`` is visible to query ``i`` iff ``block_ids[j] <= block_ids[i]``
+    (same convention as :func:`make_block_causal_mask`).
+
+    Args:
+        block_ids: ``(B, T)`` int64 — block index per position (non-decreasing along T).
+        dtype:     dtype for the mask (match softmax logits, usually ``float32``).
+        merge_key_padding_mask: Optional ``(B, T)`` with **1** = real token, **0** = pad.
+            Padded keys and queries receive ``-inf`` so they do not contribute.
+
+    Returns:
+        ``(B, 1, T, T)`` additive mask (0 = attend, ``-inf`` = masked).
+
+    Note:
+        In Transformers >= 4.56, passing a **4D** ``attention_mask`` into
+        ``GPT2Model.forward`` skips built-in causal construction and uses this
+        tensor as-is (see ``masking_utils._preprocess_mask_arguments``).
+    """
+    if block_ids.dim() != 2:
+        raise ValueError(f"block_ids must be (B, T), got {block_ids.shape}")
+    bq = block_ids.unsqueeze(2)  # (B, T, 1) query
+    bk = block_ids.unsqueeze(1)  # (B, 1, T) key
+    allowed = bk <= bq
+    min_val = torch.finfo(dtype).min
+    mask = torch.where(allowed, torch.zeros((), device=block_ids.device, dtype=dtype), min_val)
+    mask = mask.unsqueeze(1)  # (B, 1, T, T)
+    if merge_key_padding_mask is not None:
+        if merge_key_padding_mask.shape != block_ids.shape:
+            raise ValueError("merge_key_padding_mask must match block_ids shape")
+        pad = (merge_key_padding_mask < 0.5).to(dtype)
+        # mask padded keys (columns) and padded queries (rows)
+        mask = mask + pad.unsqueeze(1).unsqueeze(2) * min_val  # (B,1,1,T) keys
+        mask = mask + pad.unsqueeze(1).unsqueeze(3) * min_val  # (B,1,T,1) queries
+    return mask
+
+
+def block_sizes_to_ids(block_sizes: Sequence[int], device: torch.device) -> torch.Tensor:
+    """Expand ``[n0, n1, ...]`` into ``(sum_i n_i,)`` block index per position."""
+    ids: List[int] = []
+    for b, sz in enumerate(block_sizes):
+        ids.extend([b] * int(sz))
+    return torch.tensor(ids, device=device, dtype=torch.long)
 
 
 # ---------------------------------------------------------------------------
@@ -308,51 +357,17 @@ class ConceptModel(nn.Module):
 # ---------------------------------------------------------------------------
 
 class CustomGPT2Model(GPT2Model):
+    """GPT-2 body; use a **4D** ``attention_mask`` for custom (e.g. block) patterns.
+
+    HuggingFace ``GPT2Model`` treats ``attention_mask`` with ``ndim == 4`` as a
+    fully prepared additive mask (see ``create_causal_mask`` / ``_preprocess_mask_arguments``).
+    Do **not** pass a 2D padding mask here if you need block causality — build
+    ``(B, 1, T, T)`` via :func:`make_variable_block_causal_mask` and optionally
+    merge padding there.
     """
-    Custom GPT-2 model adapted to use block-level causal masking.
-    Intended to use as backbone for the Concept Model.    
-    """
-    
-    def forward(
-        self,
-        inputs_embeds, # (B, N*n, d_ae)
-        attention_mask=None,
-        past_key_values=None,
-        use_cache=None,
-        **kwargs,
-    ):
 
-        seq_len = inputs_embeds.shape[-2]
-
-        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-        position_ids = torch.arange(
-            seq_len, device=inputs_embeds.device
-        ) + past_seen_tokens
-        position_ids = position_ids.unsqueeze(0)
-
-        position_embeds = self.wpe(position_ids)
-        hidden_states = inputs_embeds + position_embeds.to(inputs_embeds.device)
-
-        hidden_states = self.drop(hidden_states)
-        output_shape = (-1,) + (seq_len,) + (hidden_states.size(-1),)
-
-        for block in self.h:
-            hidden_states = block(
-                hidden_states,
-                past_key_values,
-                attention_mask=attention_mask,
-                use_cache=use_cache,
-                position_ids=position_ids,
-                **kwargs,
-            )
-
-        hidden_states = self.ln_f(hidden_states)
-        hidden_states = hidden_states.view(output_shape)
-
-        return BaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=hidden_states,
-            past_key_values=past_key_values if use_cache else None,
-        )
+    # Inherits ``forward`` from ``GPT2Model`` so SDPA/eager paths match the installed
+    # Transformers version (incl. ``is_causal=False`` when a 4D mask is present).
 
 
 class CustomGPT2LMHeadModel(GPT2LMHeadModel):
@@ -360,9 +375,6 @@ class CustomGPT2LMHeadModel(GPT2LMHeadModel):
         super().__init__(config)
         self.transformer = CustomGPT2Model(config)
         self.post_init()
-    
-    def forwrd(self, *args, **kwargs):
-        return self.transformer(*args, **kwargs)
 
 
 class ConceptModelGPT2(nn.Module):
@@ -382,11 +394,13 @@ class ConceptModelGPT2(nn.Module):
         d_ae: int,
         pretrained_name: str = "gpt2",
         max_seq_len: Optional[int] = None,
+        n_latent_tokens: int = 1,
     ):
         super().__init__()
         from transformers import AutoConfig
 
         self.d_ae = d_ae
+        self.n_latent_tokens = n_latent_tokens
 
         backbone_cfg = AutoConfig.from_pretrained(pretrained_name)
         d_backbone = backbone_cfg.hidden_size
@@ -426,7 +440,8 @@ class ConceptModelGPT2(nn.Module):
         x = self.input_norm(x)
         embeds = self.input_proj(x)           # (B, T, d_backbone)
 
-        attention_mask = make_block_causal_mask(n_chunks, n, x.device)  # (1, 1, T, T)
+        attn = make_block_causal_mask(n_chunks, n, x.device).to(dtype=embeds.dtype)
+        attention_mask = attn.expand(B, -1, -1, -1)  # (B, 1, T, T) — 4D for HF GPT-2
 
         out = self.backbone(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state  # (B, T, d_backbone)
         out = self.output_proj(out)           # (B, T, d_ae)
@@ -465,6 +480,7 @@ def build_concept_model(cfg: ConceptModelConfig, d_ae: int, n_latent_tokens: int
         return ConceptModelGPT2(
             d_ae=d_ae,
             pretrained_name=cfg.cm_type,
+            n_latent_tokens=n_latent_tokens,
         )
 
 

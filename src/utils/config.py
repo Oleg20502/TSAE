@@ -303,3 +303,70 @@ def load_concept_config_from_paths(paths: List[str] | List[Path]) -> ConceptExpe
     if len(paths) == 1:
         return load_concept_config(paths[0])
     return merge_concept_configs(*paths)
+
+
+# ---------------------------------------------------------------------------
+# Hybrid latent reasoning (GPT-2 + AE latents)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HybridLatentDataConfig:
+    dataset_name: str = "booydar/gsm8k"
+    dataset_config: str = "default"
+    task_column: str = "task"
+    cot_column: str = "cot"
+    labels_column: str = "labels"
+    cache_dir: Optional[str] = None
+    reasoning_trigger: str = "!!!!"
+    end_of_thinking_phrase: str = "end of thinking"
+    gpt2_tokenizer_name: str = "openai-community/gpt2"
+    max_prompt_tokens: int = 256
+    max_answer_tokens: int = 128
+    max_cot_steps: int = 16
+    num_train_samples: Optional[int] = None
+    num_val_samples: Optional[int] = None
+    seed: int = 42
+
+
+@dataclass
+class HybridLatentModelConfig:
+    ae_config_path: str = ""
+    ae_checkpoint_path: str = ""
+    pretrained_gpt2: str = "openai-community/gpt2"
+    max_model_seq_len: Optional[int] = None
+    lambda_mse: float = 0.1
+    lambda_answer_ce: float = 1.0
+
+
+@dataclass
+class HybridLatentExperimentConfig:
+    data: HybridLatentDataConfig = field(default_factory=HybridLatentDataConfig)
+    model: HybridLatentModelConfig = field(default_factory=HybridLatentModelConfig)
+    train: TrainConfig = field(default_factory=TrainConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
+
+
+def load_hybrid_latent_config(path: str | Path) -> HybridLatentExperimentConfig:
+    raw = load_yaml(path)
+    return from_dict(data_class=HybridLatentExperimentConfig, data=raw, config=_DACITE_CFG)
+
+
+def merge_hybrid_latent_configs(*paths: str | Path) -> HybridLatentExperimentConfig:
+    merged: dict = {}
+    for p in paths:
+        raw = load_yaml(p)
+        for section, values in raw.items():
+            if section not in merged:
+                merged[section] = {}
+            if isinstance(values, dict):
+                merged[section].update(values)
+            else:
+                merged[section] = values
+    return from_dict(data_class=HybridLatentExperimentConfig, data=merged, config=_DACITE_CFG)
+
+
+def load_hybrid_latent_config_from_paths(paths: List[str] | List[Path]) -> HybridLatentExperimentConfig:
+    if len(paths) == 1:
+        return load_hybrid_latent_config(paths[0])
+    return merge_hybrid_latent_configs(*paths)
