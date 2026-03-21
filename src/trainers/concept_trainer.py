@@ -42,34 +42,6 @@ from src.utils.config import TrainConfig
 
 
 # ---------------------------------------------------------------------------
-# Trainable module (Concept Model only)
-# ---------------------------------------------------------------------------
-
-class _CMTrainableCore(nn.Module):
-    """Thin wrapper around the Concept Model so Accelerate can prepare it.
-
-    Only the CM parameters are inside this module; the frozen AE encoder and
-    decoder live in the trainer and are never included in optimizer states or
-    saved checkpoints.
-    """
-
-    def __init__(self, concept_model: nn.Module):
-        super().__init__()
-        self.concept_model = concept_model
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Pass a flattened latent sequence through the CM.
-
-        Args:
-            x: ``(B, N*n, d_ae)`` flattened latent sequence.
-
-        Returns:
-            ``(B, N*n, d_ae)`` predicted latent sequence.
-        """
-        return self.concept_model(x)
-
-
-# ---------------------------------------------------------------------------
 # Trainer
 # ---------------------------------------------------------------------------
 
@@ -111,7 +83,7 @@ class ConceptTrainer:
         self._n_latent       = n_latent_tokens
         self._lambda_mse     = lambda_mse
 
-        self._core = _CMTrainableCore(concept_model)
+        self._core = concept_model
 
         # ------------------------------------------------------------------
         # Accelerator
@@ -476,10 +448,7 @@ class ConceptTrainer:
     def _build_state_dict(self) -> Dict[str, torch.Tensor]:
         """Collect only the Concept Model weights (no frozen AE components)."""
         core = self.accelerator.unwrap_model(self._core)
-        sd: Dict[str, torch.Tensor] = {}
-        for k, v in core.concept_model.state_dict().items():
-            sd[f"concept_model.{k}"] = v
-        return sd
+        return dict(core.state_dict())
 
     def save_checkpoint(
         self, output_dir: str, global_step: int = 0, epoch: int = 0, save_ema: bool = True
