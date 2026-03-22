@@ -51,7 +51,13 @@ def main():
     repr_encoder = build_repr_encoder(cfg.model.backbone_name)
     sem_proj = build_sem_proj(encoder.d_model, repr_encoder.sent_dim)
 
-    autoencoder = BottleneckAE(encoder, decoder, latent_aug, sem_proj, lambda_sem)
+    autoencoder = BottleneckAE(
+        encoder,
+        decoder,
+        sem_proj=sem_proj,
+        latent_aug=latent_aug,
+        lambda_sem=lambda_sem,
+    )
 
     if tc.init_from_checkpoint:
         print(f"Initializing BottleneckAE from: {tc.init_from_checkpoint}")
