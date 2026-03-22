@@ -318,6 +318,13 @@ class HybridLatentDataConfig:
     cot_column: str = "cot"
     labels_column: str = "labels"
     cache_dir: Optional[str] = None
+    # When set, load train/validation from prepare_hybrid_lm_dataset output (GeneralHybridLatentCollator).
+    preprocessed_dir: Optional[str] = None
+    text_column: str = "text"
+    prompt_min_len: int = 32
+    prompt_max_len: int = 96
+    completion_min_len: int = 1
+    completion_max_len: int = 4
     reasoning_trigger: str = "!!!!"
     end_of_thinking_phrase: str = "end of thinking"
     gpt2_tokenizer_name: str = "openai-community/gpt2"
