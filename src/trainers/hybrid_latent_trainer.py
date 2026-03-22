@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
-from safetensors.torch import save_file
+from safetensors.torch import load_model, save_model
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch_ema import ExponentialMovingAverage
@@ -149,9 +149,12 @@ class HybridLatentTrainer:
     def _cache_end_thinking_latent(self) -> None:
         device = self.accelerator.device
         mc = self.accelerator.unwrap_model(self._core)
+        # Must match encoder.pos_emb length (BottleneckEncoder.max_length); longer
+        # sequences OOB the position embedding table (see tok_emb + pos_emb in encoder).
+        ae_max_len = int(self._ae_encoder.max_length)
         enc = self._ae_tokenizer(
             self._end_phrase,
-            max_length=512,
+            max_length=ae_max_len,
             padding="max_length",
             truncation=True,
             return_tensors="pt",
@@ -452,10 +455,6 @@ class HybridLatentTrainer:
 
         return metrics
 
-    def _build_state_dict(self) -> Dict[str, torch.Tensor]:
-        core = self.accelerator.unwrap_model(self._core)
-        return dict(core.state_dict())
-
     def save_checkpoint(
         self, output_dir: str, global_step: int = 0, epoch: int = 0, save_ema: bool = True
     ):
@@ -484,8 +483,9 @@ class HybridLatentTrainer:
                 self._ema.store()
                 self._ema.copy_to()
             try:
-                save_file(
-                    self._build_state_dict(),
+                core = self.accelerator.unwrap_model(self._core)
+                save_model(
+                    core,
                     os.path.join(output_dir, "model.safetensors"),
                 )
             finally:
@@ -502,8 +502,9 @@ class HybridLatentTrainer:
                 self._ema.store()
                 self._ema.copy_to()
             try:
-                save_file(
-                    self._build_state_dict(),
+                core = self.accelerator.unwrap_model(self._core)
+                save_model(
+                    core,
                     os.path.join(output_dir, "model.safetensors"),
                 )
             finally:
@@ -514,8 +515,9 @@ class HybridLatentTrainer:
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
             os.makedirs(output_dir, exist_ok=True)
-            save_file(
-                self._build_state_dict(),
+            core = self.accelerator.unwrap_model(self._core)
+            save_model(
+                core,
                 os.path.join(output_dir, "model.safetensors"),
             )
 
@@ -619,19 +621,13 @@ class HybridLatentTrainer:
 
 def load_hybrid_latent_weights(checkpoint_path: str, model: HybridLatentReasoningGPT2, device: str = "cpu") -> None:
     if checkpoint_path.endswith(".safetensors"):
-        from safetensors.torch import load_file
-
-        state = load_file(checkpoint_path, device=device)
+        missing, unexpected = load_model(
+            model, checkpoint_path, strict=False, device=device
+        )
     else:
         state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        missing, unexpected = model.load_state_dict(state, strict=False)
 
-    prefix = "hybrid_model."
-    if any(k.startswith(prefix) for k in state):
-        inner = {k[len(prefix) :]: v for k, v in state.items() if k.startswith(prefix)}
-    else:
-        inner = dict(state)
-
-    missing, unexpected = model.load_state_dict(inner, strict=False)
     if unexpected:
         print("Warning: unexpected keys in checkpoint:", unexpected)
     if missing:

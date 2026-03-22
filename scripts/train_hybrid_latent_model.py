@@ -6,8 +6,6 @@ Usage:
     accelerate launch scripts/train_hybrid_latent_model.py --config configs/train/hybrid_gsm8k.yaml
 """
 
-from __future__ import annotations
-
 import argparse
 import sys
 from dataclasses import asdict
@@ -89,6 +87,9 @@ def main():
     gpt2_tok = AutoTokenizer.from_pretrained(dc.gpt2_tokenizer_name)
 
     datasets = load_hybrid_latent_dataset(dc)
+    print(f"Train samples: {len(datasets['train'])}")
+    print(f"Validation samples: {len(datasets['validation'])}")
+    
     train_ds = datasets["train"]
     eval_ds = datasets["validation"]
 

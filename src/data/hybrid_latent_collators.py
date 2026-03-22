@@ -1,7 +1,5 @@
 """Batching for hybrid latent training (GPT-2 + AE tokens per CoT step)."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Dict, List
 

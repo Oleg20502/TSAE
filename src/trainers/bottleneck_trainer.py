@@ -107,7 +107,7 @@ class BottleneckTrainer:
             optimizer, num_warmup_steps=train_config.warmup_steps
         )
 
-        # Accelerate wraps core, optimizer, dataloaders, scheduler — NOT repr_encoder
+        # Accelerate wraps core, optimizer, dataloaders, scheduler
         (
             self._core,
             self._optimizer,

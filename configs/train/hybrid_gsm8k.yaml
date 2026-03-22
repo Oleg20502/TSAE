@@ -3,27 +3,27 @@ model:
   ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-925000/model.safetensors
   pretrained_gpt2: "openai-community/gpt2"
   max_model_seq_len: null
-  lambda_mse: 0.1
+  lambda_mse: 10.0
   lambda_answer_ce: 1.0
 
 train:
-  output_dir: "outputs/hybrid_latent/gsm8k_run1"
+  output_dir: "outputs/hybrid_latent/test/"
   init_from_checkpoint: null
-  lr: 1.0e-4
-  weight_decay: 0.01
+  lr: 1.0e-5
+  weight_decay: 0.001
   ema_decay: 0.9999
-  epochs: 3
+  epochs: 10
   warmup_steps: 100
-  batch_size: 2
+  batch_size: 8
   gradient_accumulation_steps: 4
   max_grad_norm: 1.0
   logging_steps: 10
-  eval_steps: 200
-  save_steps: 500
+  eval_steps: 100
+  save_steps: 100
   save_total_limit: 2
   fp16: false
   bf16: true
-  dataloader_num_workers: 4
+  dataloader_num_workers: 16
   seed: 42
   report_to: tensorboard
   metric_for_best_model: null
@@ -39,8 +39,8 @@ data:
   end_of_thinking_phrase: "end of thinking"
   gpt2_tokenizer_name: "openai-community/gpt2"
   max_prompt_tokens: 256
-  max_answer_tokens: 128
-  max_cot_steps: 16
+  max_answer_tokens: 16
+  max_cot_steps: 10
   num_train_samples: null
-  num_val_samples: 256
+  num_val_samples: 10000
   seed: 42
