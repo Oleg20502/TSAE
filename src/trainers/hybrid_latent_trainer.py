@@ -1,17 +1,6 @@
-"""Accelerate-based trainer for the Concept Model.
+"""Accelerate trainer: hybrid GPT-2 + frozen AE (latent reasoning + answer LM)."""
 
-Structural notes:
-- ``_CMTrainableCore`` wraps only the Concept Model (CM); the frozen AE encoder
-  and decoder live outside it, matching the repr_encoder pattern in
-  ``BottleneckTrainer``.
-- The frozen AE decoder is called inside ``_forward()`` so CE-loss gradients
-  flow through it back to the CM via normal autograd. Because decoder parameters
-  have ``requires_grad=False`` they accumulate no ``.grad``; only the CM learns.
-- The frozen AE encoder is called under ``torch.no_grad()`` — its output is
-  treated as a fixed target / input.
-- EMA, Accelerate preparation, checkpointing, and resume logic mirror
-  ``BottleneckTrainer`` exactly.
-"""
+from __future__ import annotations
 
 import json
 import math
@@ -22,73 +11,55 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from accelerate import Accelerator
-from safetensors.torch import save_file
+from safetensors.torch import load_model, save_model
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch_ema import ExponentialMovingAverage
 from tqdm.auto import tqdm
-from transformers import get_constant_schedule_with_warmup
+from transformers import PreTrainedTokenizerBase, get_constant_schedule_with_warmup
 
+from src.eval.hybrid_latent_metrics import accumulate_hybrid_eval_batch
 from src.losses.reconstruction import reconstruction_loss
+from src.models.concept_model import make_variable_block_causal_mask
+from src.models.hybrid_latent_model import HybridLatentReasoningGPT2
 from src.utils.best_checkpoint import (
     default_greater_is_better,
     is_valid_metric_value,
     metric_improves,
 )
-from src.utils.config import TrainConfig
+from src.utils.config import HybridLatentModelConfig, TrainConfig
 from src.utils.training_steps import optimizer_steps_per_epoch
 
 
-# ---------------------------------------------------------------------------
-# Trainer
-# ---------------------------------------------------------------------------
-
-class ConceptTrainer:
-    """Lightweight Accelerate-based trainer for the Concept Model.
-
-    The Concept Model is trained to predict the next AE latent in a sequence.
-    The frozen AE encoder compresses each text chunk into a latent; the CM
-    then predicts the next latent; the frozen decoder reconstructs text from
-    the predicted latent and the cross-entropy over the reconstruction is the
-    primary training signal.  An auxiliary MSE loss penalises the distance
-    between predicted and actual latents.
-
-    Args:
-        concept_model:   Untrained CM (``ConceptModel`` or ``ConceptModelGPT2``).
-        ae_encoder:      Frozen AE encoder (``BottleneckEncoder``).
-        ae_decoder:      Frozen AE decoder.
-        n_latent_tokens: Number of latent tokens per chunk in the AE.
-        lambda_mse:      Weight of the MSE latent loss term.
-        train_dataset:   ``ChunkGroupDataset`` for training.
-        eval_dataset:    ``ChunkGroupDataset`` for evaluation.
-        data_collator:   ``CMCollator`` instance.
-        train_config:    ``TrainConfig`` (reused from AE codebase).
-    """
-
+class HybridLatentTrainer:
     def __init__(
         self,
-        concept_model: nn.Module,
-        ae_encoder: nn.Module,
-        ae_decoder: nn.Module,
+        model: HybridLatentReasoningGPT2,
+        ae_encoder: torch.nn.Module,
+        ae_decoder: torch.nn.Module,
+        ae_tokenizer: PreTrainedTokenizerBase,
         n_latent_tokens: int,
-        lambda_mse: float,
+        model_cfg: HybridLatentModelConfig,
         train_dataset,
         eval_dataset,
         data_collator,
         train_config: TrainConfig,
+        end_of_thinking_phrase: str,
+        max_cot_steps: int,
     ):
-        self.cfg             = train_config
-        self._n_latent       = n_latent_tokens
-        self._lambda_mse     = lambda_mse
+        self.cfg = train_config
+        self.model_cfg = model_cfg
+        self._max_cot_steps = max_cot_steps
+        self._n_latent = n_latent_tokens
+        self._lambda_mse = model_cfg.lambda_mse
+        self._lambda_ans = model_cfg.lambda_answer_ce
+        self._ae_tokenizer = ae_tokenizer
+        self._end_phrase = end_of_thinking_phrase
 
-        self._core = concept_model
+        self._core = model
 
-        # ------------------------------------------------------------------
-        # Accelerator
-        # ------------------------------------------------------------------
         mixed_precision = (
             "fp16" if train_config.fp16 else ("bf16" if train_config.bf16 else "no")
         )
@@ -104,9 +75,6 @@ class ConceptTrainer:
             project_dir=train_config.output_dir,
         )
 
-        # ------------------------------------------------------------------
-        # Optimizer, dataloaders, scheduler
-        # ------------------------------------------------------------------
         optimizer = AdamW(
             self._core.parameters(),
             lr=train_config.lr,
@@ -155,11 +123,7 @@ class ConceptTrainer:
                 len(self._train_dl) / train_config.gradient_accumulation_steps
             )
 
-        # ------------------------------------------------------------------
-        # Frozen AE components — on device, excluded from Accelerate/optimizer
-        # ------------------------------------------------------------------
         device = self.accelerator.device
-
         self._ae_encoder = ae_encoder.to(device)
         self._ae_encoder.eval()
         for p in self._ae_encoder.parameters():
@@ -170,9 +134,8 @@ class ConceptTrainer:
         for p in self._ae_decoder.parameters():
             p.requires_grad = False
 
-        # ------------------------------------------------------------------
-        # EMA
-        # ------------------------------------------------------------------
+        self._cache_end_thinking_latent()
+
         self._ema: Optional[ExponentialMovingAverage] = None
         if train_config.ema_decay and train_config.ema_decay > 0.0:
             params = [p for p in self._core.parameters() if p.requires_grad]
@@ -180,124 +143,201 @@ class ConceptTrainer:
                 self._ema = ExponentialMovingAverage(params, decay=train_config.ema_decay)
 
         self._saved_checkpoints: List[str] = []
-
         self._best_metric: Optional[float] = None
         self._best_model_checkpoint: Optional[str] = None
         self._last_eval_metrics: Optional[Dict[str, float]] = None
         self._last_eval_step: int = -1
 
-    # ------------------------------------------------------------------
-    # Forward helpers
-    # ------------------------------------------------------------------
+    def _zero_eval_accuracy_totals(self, device: torch.device) -> Dict[str, torch.Tensor]:
+        z = lambda: torch.zeros(1, device=device)
+        d: Dict[str, torch.Tensor] = {
+            "answer_em_sum": z(),
+            "answer_em_den": z(),
+            "cot_full_em_sum": z(),
+            "cot_full_em_den": z(),
+            "cot_tok_cor": z(),
+            "cot_tok_tot": z(),
+        }
+        for j in range(1, self._max_cot_steps + 1):
+            d[f"cot_step_{j}_em_sum"] = z()
+            d[f"cot_step_{j}_em_den"] = z()
+        return d
 
     @torch.no_grad()
-    def _encode_latents(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        """Encode all N chunks per sequence with the frozen AE encoder.
+    def _cache_end_thinking_latent(self) -> None:
+        device = self.accelerator.device
+        mc = self.accelerator.unwrap_model(self._core)
+        # Must match encoder.pos_emb length (BottleneckEncoder.max_length); longer
+        # sequences OOB the position embedding table (see tok_emb + pos_emb in encoder).
+        ae_max_len = int(self._ae_encoder.max_length)
+        enc = self._ae_tokenizer(
+            self._end_phrase,
+            max_length=ae_max_len,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        ids = enc["input_ids"].to(device)
+        am = enc["attention_mask"].to(device)
+        z = self._ae_encoder(ids, am)
+        mc.set_end_thinking_latent(z)
 
-        Args:
-            input_ids:      ``(B, N, T)``
-            attention_mask: ``(B, N, T)``
+    def _forward_activations(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        B = batch["prompt_token_ids"].size(0)
+        device = batch["prompt_token_ids"].device
 
-        Returns:
-            ``(B, N, n, d_ae)`` where ``n = n_latent_tokens``.
-        """
-        B, N, T = input_ids.shape
-        latents = self._ae_encoder(
-            input_ids.view(B * N, T),
-            attention_mask.view(B * N, T),
-        )  # (B*N, n, d_ae)
-        return latents.view(B, N, latents.size(1), latents.size(2))
+        cot_in = batch["cot_ae_input_ids"]
+        cot_m = batch["cot_ae_attention_mask"]
+        K_max = cot_in.size(1)
+        T_ae = cot_in.size(2)
+        flat_in = cot_in.view(B * K_max, T_ae)
+        flat_m = cot_m.view(B * K_max, T_ae)
+        with torch.no_grad():
+            z_flat = self._ae_encoder(flat_in, flat_m)
+        cot_latents = z_flat.view(B, K_max, self._n_latent, z_flat.size(-1))
+        valid_k = batch["cot_valid"].unsqueeze(-1).unsqueeze(-1).to(dtype=cot_latents.dtype)
+        cot_latents = torch.nan_to_num(cot_latents, nan=0.0, posinf=0.0, neginf=0.0)
+        cot_latents = cot_latents * valid_k
 
-    def _forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """Full CM forward pass: encode → CM → decode → losses.
+        end_ids = batch["end_phrase_input_ids"]
+        end_m = batch["end_phrase_attention_mask"]
+        with torch.no_grad():
+            z_end = self._ae_encoder(end_ids[:1], end_m[:1])
 
-        CE loss gradient flows: loss → frozen decoder → pred_latents → CM.
-        MSE loss gradient flows: loss → pred_latents → CM.
-        """
-        input_ids         = batch["input_ids"]          # (B, N, T)
-        attention_mask    = batch["attention_mask"]     # (B, N, T)
-        decoder_input_ids = batch["decoder_input_ids"]  # (B, N, T)
-        labels            = batch["labels"]             # (B, N, T)
+        m = self.accelerator.unwrap_model(self._core)
+        inputs_embeds, block_ids, seq_m, meta = m.build_inputs_embeds_and_masks(
+            batch["prompt_token_ids"],
+            batch["prompt_attention_mask"],
+            batch["trigger_token_ids"],
+            cot_latents,
+            batch["cot_valid"],
+            batch["answer_token_ids"],
+            batch["answer_attention_mask"],
+        )
 
-        B, N, T = input_ids.shape
-        n = self._n_latent
+        attn_4d = make_variable_block_causal_mask(
+            block_ids,
+            dtype=torch.float32,
+            merge_key_padding_mask=seq_m,
+        )
 
-        # 1. Encode all chunks with frozen AE encoder (no gradient)
-        ae_latents = self._encode_latents(input_ids, attention_mask)  # (B, N, n, d_ae)
-        d_ae = ae_latents.size(-1)
-
-        # 2. Flatten and run through CM
-        cm_input   = ae_latents.view(B, N * n, d_ae)
-        pred_flat  = self._core(cm_input)                 # (B, N*n, d_ae)  ← trainable
-        pred_latents = pred_flat.view(B, N, n, d_ae)
-
-        # 3. Shift: output latent i predicts target latent i+1
-        N_pred        = N - 1
-        pred_shifted  = pred_latents[:, :-1]              # (B, N-1, n, d_ae)
-        target_latents = ae_latents[:, 1:].detach()       # (B, N-1, n, d_ae) — fixed target
-
-        # 4. MSE between predicted and actual next latents
-        mse_loss = F.mse_loss(pred_shifted, target_latents)
-
-        # 5. CE via frozen AE decoder (teacher-forcing on next-chunk tokens)
-        dec_in      = decoder_input_ids[:, 1:].reshape(B * N_pred, T)  # skip first chunk
-        lbl         = labels[:, 1:].reshape(B * N_pred, T)
-        pred_decode = pred_shifted.reshape(B * N_pred, n, d_ae)
-
-        # Gradients flow through the frozen decoder back to pred_shifted → CM
-        logits = self._ae_decoder(
-            latent_tokens=pred_decode,
-            decoder_input_ids=dec_in,
-        )  # (B*N_pred, T, vocab)
-
-        ce_loss = reconstruction_loss(logits, lbl)
-
-        loss = ce_loss + self._lambda_mse * mse_loss
+        out = m(inputs_embeds, attn_4d)
         return {
-            "loss":  loss,
-            "l_ce":  ce_loss.detach(),
+            "lm_logits": out["lm_logits"],
+            "latent_pred": out["latent_pred"],
+            "meta": meta,
+            "cot_latents": cot_latents,
+            "z_end": z_end,
+            "K_max": K_max,
+            "B": B,
+            "device": device,
+        }
+
+    def _loss_from_activations(
+        self, batch: Dict[str, torch.Tensor], act: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        lm_logits = act["lm_logits"]
+        latent_pred = act["latent_pred"]
+        meta = act["meta"]
+        cot_latents = act["cot_latents"]
+        z_end = act["z_end"]
+        K_max = act["K_max"]
+        B = act["B"]
+        device = act["device"]
+
+        V = lm_logits.size(-1)
+        shift_logits = lm_logits[:, :-1, :].contiguous()
+        shift_labels = batch["lm_labels"][:, 1:].contiguous()
+        if (shift_labels != -100).any():
+            loss_lm = F.cross_entropy(
+                shift_logits.float().reshape(-1, V),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            ).to(dtype=lm_logits.dtype)
+        else:
+            loss_lm = torch.zeros((), device=device, dtype=lm_logits.dtype)
+
+        lat0 = meta["latent_start"]
+        n = meta["n"]
+        cot_valid = batch["cot_valid"]
+
+        mse_terms: List[torch.Tensor] = []
+        ce_terms: List[torch.Tensor] = []
+
+        z_end_b = z_end.expand(B, -1, -1).to(dtype=latent_pred.dtype)
+
+        for j in range(K_max + 1):
+            pred_j = latent_pred[:, lat0 + j * n : lat0 + (j + 1) * n]
+            if j < K_max:
+                tgt = cot_latents[:, j]
+                mask = cot_valid[:, j]
+            else:
+                tgt = z_end_b
+                mask = cot_valid[:, K_max - 1] if K_max > 0 else torch.ones(B, dtype=torch.bool, device=device)
+
+            if not mask.any():
+                continue
+            mse_terms.append(
+                F.mse_loss(pred_j[mask].float(), tgt[mask].float()).to(dtype=pred_j.dtype)
+            )
+
+            if j < K_max:
+                dec_in = batch["cot_decoder_input_ids"][mask, j]
+                lbl = batch["cot_labels"][mask, j]
+            else:
+                dec_in = batch["end_decoder_input_ids"][mask]
+                lbl = batch["end_labels"][mask]
+
+            logits = self._ae_decoder(latent_tokens=pred_j[mask], decoder_input_ids=dec_in)
+            ce_terms.append(reconstruction_loss(logits.float(), lbl))
+
+        mse_loss = torch.stack(mse_terms).mean() if mse_terms else torch.tensor(0.0, device=device)
+        ce_lat = torch.stack(ce_terms).mean() if ce_terms else torch.tensor(0.0, device=device)
+
+        loss = self._lambda_ans * loss_lm + ce_lat + self._lambda_mse * mse_loss
+
+        return {
+            "loss": loss,
+            "l_lm": loss_lm.detach(),
+            "l_latent_ce": ce_lat.detach(),
             "l_mse": mse_loss.detach(),
         }
 
-    # ------------------------------------------------------------------
-    # Training loop
-    # ------------------------------------------------------------------
+    def _forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        act = self._forward_activations(batch)
+        return self._loss_from_activations(batch, act)
 
     def train(self, resume_from_checkpoint: Optional[str] = None):
         cfg = self.cfg
-        self.accelerator.init_trackers("concept_model", config=asdict(cfg))
+        self.accelerator.init_trackers("hybrid_latent", config=asdict(cfg))
 
-        global_step            = 0
-        start_epoch            = 0
-        resume_steps_in_epoch  = 0
+        global_step = 0
+        start_epoch = 0
+        resume_steps_in_epoch = 0
 
         if resume_from_checkpoint is not None:
             if resume_from_checkpoint == "latest":
                 resume_from_checkpoint = self._find_latest_checkpoint()
             if resume_from_checkpoint is not None:
-                global_step           = self.load_checkpoint(resume_from_checkpoint)
-                start_epoch           = global_step // self._steps_per_epoch
+                global_step = self.load_checkpoint(resume_from_checkpoint)
+                start_epoch = global_step // self._steps_per_epoch
                 resume_steps_in_epoch = global_step % self._steps_per_epoch
 
-        log_loss_sum = log_ce_sum = log_mse_sum = log_gnorm_sum = 0.0
+        log_loss_sum = log_lm_sum = log_lce_sum = log_mse_sum = log_gnorm_sum = 0.0
         log_micro_steps = 0
-        last_grad_norm  = 0.0
+        last_grad_norm = 0.0
 
         for epoch in range(start_epoch, cfg.epochs):
             self._core.train()
 
             if epoch == start_epoch and resume_steps_in_epoch > 0:
-                batches_to_skip  = resume_steps_in_epoch * cfg.gradient_accumulation_steps
-                train_dl_epoch   = self.accelerator.skip_first_batches(
+                batches_to_skip = resume_steps_in_epoch * cfg.gradient_accumulation_steps
+                train_dl_epoch = self.accelerator.skip_first_batches(
                     self._train_dl, batches_to_skip
                 )
                 steps_this_epoch = self._steps_per_epoch - resume_steps_in_epoch
             else:
-                train_dl_epoch   = self._train_dl
+                train_dl_epoch = self._train_dl
                 steps_this_epoch = self._steps_per_epoch
 
             epoch_bar = tqdm(
@@ -310,7 +350,7 @@ class ConceptTrainer:
             for batch in train_dl_epoch:
                 with self.accelerator.accumulate(self._core):
                     outputs = self._forward(batch)
-                    loss    = outputs["loss"]
+                    loss = outputs["loss"]
                     self.accelerator.backward(loss)
 
                     if self.accelerator.sync_gradients:
@@ -323,9 +363,10 @@ class ConceptTrainer:
                     self._scheduler.step()
                     self._optimizer.zero_grad()
 
-                log_loss_sum    += loss.detach().item()
-                log_ce_sum      += outputs["l_ce"].item()
-                log_mse_sum     += outputs["l_mse"].item()
+                log_loss_sum += loss.detach().item()
+                log_lm_sum += outputs["l_lm"].item()
+                log_lce_sum += outputs["l_latent_ce"].item()
+                log_mse_sum += outputs["l_mse"].item()
                 log_micro_steps += 1
 
                 if self.accelerator.sync_gradients:
@@ -339,11 +380,16 @@ class ConceptTrainer:
 
                     if global_step % cfg.logging_steps == 0:
                         self._log_train(
-                            global_step, epoch,
-                            log_loss_sum, log_ce_sum, log_mse_sum,
-                            log_gnorm_sum, log_micro_steps,
+                            global_step,
+                            epoch,
+                            log_loss_sum,
+                            log_lm_sum,
+                            log_lce_sum,
+                            log_mse_sum,
+                            log_gnorm_sum,
+                            log_micro_steps,
                         )
-                        log_loss_sum = log_ce_sum = log_mse_sum = log_gnorm_sum = 0.0
+                        log_loss_sum = log_lm_sum = log_lce_sum = log_mse_sum = log_gnorm_sum = 0.0
                         log_micro_steps = 0
 
                     if global_step % cfg.eval_steps == 0:
@@ -368,32 +414,31 @@ class ConceptTrainer:
         step: int,
         epoch: int,
         loss_sum: float,
-        ce_sum: float,
+        lm_sum: float,
+        lce_sum: float,
         mse_sum: float,
         gnorm_sum: float,
         n: int,
     ):
         n = max(n, 1)
         log_dict = {
-            "train/loss":      loss_sum / n,
-            "train/l_ce":      ce_sum   / n,
-            "train/l_mse":     mse_sum  / n,
+            "train/loss": loss_sum / n,
+            "train/l_lm": lm_sum / n,
+            "train/l_latent_ce": lce_sum / n,
+            "train/l_mse": mse_sum / n,
             "train/grad_norm": gnorm_sum / n,
-            "train/lr":        self._scheduler.get_last_lr()[0],
-            "epoch":           epoch,
+            "train/lr": self._scheduler.get_last_lr()[0],
+            "epoch": epoch,
         }
         self.accelerator.log(log_dict, step=step)
 
         if self.accelerator.is_main_process:
             tqdm.write(
                 f"epoch={epoch + 1}  step={step}"
-                f"  loss={loss_sum/n:.4f}  l_ce={ce_sum/n:.4f}  l_mse={mse_sum/n:.4f}"
+                f"  loss={loss_sum/n:.4f}  l_lm={lm_sum/n:.4f}"
+                f"  l_latent_ce={lce_sum/n:.4f}  l_mse={mse_sum/n:.4f}"
                 f"  gnorm={gnorm_sum/n:.3f}  lr={self._scheduler.get_last_lr()[0]:.2e}"
             )
-
-    # ------------------------------------------------------------------
-    # Evaluation loop
-    # ------------------------------------------------------------------
 
     def evaluate(self, step: Optional[int] = None) -> Dict[str, float]:
         self._core.eval()
@@ -402,11 +447,14 @@ class ConceptTrainer:
             self._ema.store()
             self._ema.copy_to()
 
-        device    = self.accelerator.device
-        loss_acc  = torch.zeros(1, device=device)
-        ce_acc    = torch.zeros(1, device=device)
-        mse_acc   = torch.zeros(1, device=device)
-        count     = torch.zeros(1, device=device)
+        device = self.accelerator.device
+        loss_acc = torch.zeros(1, device=device)
+        lm_acc = torch.zeros(1, device=device)
+        lce_acc = torch.zeros(1, device=device)
+        mse_acc = torch.zeros(1, device=device)
+        count = torch.zeros(1, device=device)
+
+        acc_totals = self._zero_eval_accuracy_totals(device)
 
         eval_bar = tqdm(
             self._eval_dl,
@@ -419,29 +467,72 @@ class ConceptTrainer:
         try:
             for batch in eval_bar:
                 with torch.no_grad():
-                    outputs = self._forward(batch)
+                    act = self._forward_activations(batch)
+                    outputs = self._loss_from_activations(batch, act)
+                    stats = accumulate_hybrid_eval_batch(
+                        act["lm_logits"],
+                        act["latent_pred"],
+                        act["meta"],
+                        batch,
+                        self._ae_decoder,
+                    )
                 loss_acc += outputs["loss"].detach()
-                ce_acc   += outputs["l_ce"].detach()
-                mse_acc  += outputs["l_mse"].detach()
-                count    += 1
+                lm_acc += outputs["l_lm"].detach()
+                lce_acc += outputs["l_latent_ce"].detach()
+                mse_acc += outputs["l_mse"].detach()
+                count += 1
+                for k, v in stats.items():
+                    if k in acc_totals:
+                        acc_totals[k] = acc_totals[k] + v.detach()
         finally:
             if self._ema is not None:
                 self._ema.restore()
 
         loss_acc = self.accelerator.reduce(loss_acc, reduction="sum")
-        ce_acc   = self.accelerator.reduce(ce_acc,   reduction="sum")
-        mse_acc  = self.accelerator.reduce(mse_acc,  reduction="sum")
-        count    = self.accelerator.reduce(count,    reduction="sum")
+        lm_acc = self.accelerator.reduce(lm_acc, reduction="sum")
+        lce_acc = self.accelerator.reduce(lce_acc, reduction="sum")
+        mse_acc = self.accelerator.reduce(mse_acc, reduction="sum")
+        count = self.accelerator.reduce(count, reduction="sum")
+
+        for k in list(acc_totals.keys()):
+            acc_totals[k] = self.accelerator.reduce(acc_totals[k], reduction="sum")
 
         eval_loss = (loss_acc / count).item()
-        eval_ce = (ce_acc / count).item()
+        eval_lm = (lm_acc / count).item()
+        eval_lce = (lce_acc / count).item()
         eval_mse = (mse_acc / count).item()
         metrics: Dict[str, float] = {
-            "eval/loss":       eval_loss,
-            "eval/l_ce":       eval_ce,
-            "eval/l_mse":      eval_mse,
-            "eval/perplexity": math.exp(min(eval_ce, 20)),
+            "eval/loss": eval_loss,
+            "eval/l_lm": eval_lm,
+            "eval/l_latent_ce": eval_lce,
+            "eval/l_mse": eval_mse,
+            "eval/ppl_lm": math.exp(min(eval_lm, 20)),
         }
+
+        den_ans = acc_totals.get("answer_em_den", torch.zeros(1, device=device)).item()
+        if den_ans > 0:
+            metrics["eval/answer_accuracy"] = (
+                acc_totals["answer_em_sum"].item() / den_ans
+            )
+
+        den_cot_full = acc_totals.get("cot_full_em_den", torch.zeros(1, device=device)).item()
+        if den_cot_full > 0:
+            metrics["eval/cot_accuracy"] = (
+                acc_totals["cot_full_em_sum"].item() / den_cot_full
+            )
+
+        den_cot_tok = acc_totals.get("cot_tok_tot", torch.zeros(1, device=device)).item()
+        if den_cot_tok > 0:
+            metrics["eval/cot_token_accuracy"] = (
+                acc_totals["cot_tok_cor"].item() / den_cot_tok
+            )
+
+        for j in range(1, self._max_cot_steps + 1):
+            den_k = acc_totals[f"cot_step_{j}_em_den"].item()
+            if den_k > 0:
+                metrics[f"eval/cot_accuracy_{j}"] = (
+                    acc_totals[f"cot_step_{j}_em_sum"].item() / den_k
+                )
 
         self.accelerator.log(metrics, step=step)
 
@@ -454,19 +545,9 @@ class ConceptTrainer:
 
         return metrics
 
-    # ------------------------------------------------------------------
-    # Saving / loading
-    # ------------------------------------------------------------------
-
-    def _build_state_dict(self) -> Dict[str, torch.Tensor]:
-        """Collect only the Concept Model weights (no frozen AE components)."""
-        core = self.accelerator.unwrap_model(self._core)
-        return dict(core.state_dict())
-
     def save_checkpoint(
         self, output_dir: str, global_step: int = 0, epoch: int = 0, save_ema: bool = True
     ):
-        """Save a full training checkpoint (model + optimizer + scheduler + RNG + EMA)."""
         self.accelerator.wait_for_everyone()
         os.makedirs(output_dir, exist_ok=True)
 
@@ -492,8 +573,9 @@ class ConceptTrainer:
                 self._ema.store()
                 self._ema.copy_to()
             try:
-                save_file(
-                    self._build_state_dict(),
+                core = self.accelerator.unwrap_model(self._core)
+                save_model(
+                    core,
                     os.path.join(output_dir, "model.safetensors"),
                 )
             finally:
@@ -503,7 +585,6 @@ class ConceptTrainer:
             self._saved_checkpoints.append(output_dir)
 
     def save_model(self, output_dir: str):
-        """Save final CM weights with EMA applied (no optimizer/scheduler state)."""
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
             os.makedirs(output_dir, exist_ok=True)
@@ -511,8 +592,9 @@ class ConceptTrainer:
                 self._ema.store()
                 self._ema.copy_to()
             try:
-                save_file(
-                    self._build_state_dict(),
+                core = self.accelerator.unwrap_model(self._core)
+                save_model(
+                    core,
                     os.path.join(output_dir, "model.safetensors"),
                 )
             finally:
@@ -520,17 +602,16 @@ class ConceptTrainer:
                     self._ema.restore()
 
     def save_non_ema_model(self, output_dir: str):
-        """Save final raw (non-EMA) CM weights for continued training."""
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
             os.makedirs(output_dir, exist_ok=True)
-            save_file(
-                self._build_state_dict(),
+            core = self.accelerator.unwrap_model(self._core)
+            save_model(
+                core,
                 os.path.join(output_dir, "model.safetensors"),
             )
 
     def load_checkpoint(self, checkpoint_dir: str) -> int:
-        """Load full training state. Returns the global_step at the checkpoint."""
         self.accelerator.load_state(checkpoint_dir)
 
         if self._ema is not None:
@@ -548,7 +629,8 @@ class ConceptTrainer:
 
         self._saved_checkpoints = sorted(
             [
-                str(d) for d in Path(self.cfg.output_dir).glob("checkpoint-*")
+                str(d)
+                for d in Path(self.cfg.output_dir).glob("checkpoint-*")
                 if d.is_dir() and (d / "trainer_state.json").exists()
             ],
             key=lambda d: int(Path(d).name.split("-")[1]),
@@ -562,7 +644,8 @@ class ConceptTrainer:
     def _find_latest_checkpoint(self) -> Optional[str]:
         candidates = sorted(
             [
-                d for d in Path(self.cfg.output_dir).glob("checkpoint-*")
+                d
+                for d in Path(self.cfg.output_dir).glob("checkpoint-*")
                 if d.is_dir() and (d / "trainer_state.json").exists()
             ],
             key=lambda d: int(d.name.split("-")[1]),
@@ -624,3 +707,18 @@ class ConceptTrainer:
             oldest = self._saved_checkpoints.pop(remove_idx)
             if self.accelerator.is_main_process and os.path.isdir(oldest):
                 shutil.rmtree(oldest)
+
+
+def load_hybrid_latent_weights(checkpoint_path: str, model: HybridLatentReasoningGPT2, device: str = "cpu") -> None:
+    if checkpoint_path.endswith(".safetensors"):
+        missing, unexpected = load_model(
+            model, checkpoint_path, strict=False, device=device
+        )
+    else:
+        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+
+    if unexpected:
+        print("Warning: unexpected keys in checkpoint:", unexpected)
+    if missing:
+        print("Warning: missing keys (not loaded):", missing)

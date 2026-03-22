@@ -48,7 +48,7 @@ def main():
         cfg, vocab_size, pad_token_id
     )
 
-    repr_encoder = build_repr_encoder(cfg.model)
+    repr_encoder = build_repr_encoder(cfg.model.backbone_name)
     sem_proj = build_sem_proj(encoder.d_model, repr_encoder.sent_dim)
 
     autoencoder = BottleneckAE(encoder, decoder, latent_aug, sem_proj, lambda_sem)
@@ -65,6 +65,8 @@ def main():
     print(f"Total: {n_enc + n_dec + n_sem_proj:,} trainable / {n_enc + n_dec + n_sem_proj + n_repr:,} all parameters")
     
     datasets = load_text_dataset(cfg.data)
+    print(f"Train samples: {len(datasets['train'])}")
+    print(f"Validation samples: {len(datasets['validation'])}")
     collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
 
     trainer = BottleneckTrainer(

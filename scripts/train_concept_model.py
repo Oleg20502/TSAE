@@ -8,6 +8,9 @@ Usage:
     accelerate launch scripts/train_concept_model.py --config configs/train/cm_fineweb.yaml
     accelerate launch scripts/train_concept_model.py --config configs/train/cm_fineweb.yaml \
         --resume_from_checkpoint latest
+
+Warm-start CM weights only (fresh optimizer): set ``train.init_from_checkpoint`` in YAML to a
+``model.safetensors`` path. Ignored when ``--resume_from_checkpoint`` is passed.
 """
 
 import argparse
@@ -16,19 +19,15 @@ from dataclasses import asdict
 from pathlib import Path
 
 import yaml
-from transformers import AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.data.concept_collators import ChunkGroupDataset, CMCollator
-from src.data.datasets import load_text_dataset
+from src.data.concept_collators import CMCollator
+from src.data.concept_datasets import load_cm_dataset
 from src.models.bottleneck_ae import load_bottleneck_model
-from src.models.concept_model import build_concept_model
+from src.models.concept_model import build_concept_model, load_concept_weights
 from src.trainers.concept_trainer import ConceptTrainer
-from src.utils.config import (
-    DataConfig,
-    load_concept_config_from_paths,
-)
+from src.utils.config import load_concept_config_from_paths
 
 
 def _save_concept_config(cfg, path: Path) -> None:
@@ -91,6 +90,16 @@ def main():
     # ------------------------------------------------------------------
     concept_model = build_concept_model(mc, d_ae=d_ae, n_latent_tokens=n_latent_tokens)
 
+    if tc.init_from_checkpoint:
+        if args.resume_from_checkpoint is not None:
+            print(
+                "Skipping train.init_from_checkpoint because --resume_from_checkpoint is set "
+                "(checkpoint load will define weights)."
+            )
+        else:
+            print(f"Warm-starting Concept Model from: {tc.init_from_checkpoint}")
+            load_concept_weights(tc.init_from_checkpoint, concept_model)
+
     n_cm = sum(p.numel() for p in concept_model.parameters())
     n_ae = sum(p.numel() for p in ae_encoder.parameters()) + sum(
         p.numel() for p in ae_decoder.parameters()
@@ -104,27 +113,14 @@ def main():
     # ------------------------------------------------------------------
     # Data
     # ------------------------------------------------------------------
-    # Reuse AE data loading — points at same preprocessed FineWeb chunks.
-    # We construct a minimal DataConfig for load_text_dataset.
-    data_cfg = DataConfig(
-        preprocessed_dir=dc.preprocessed_dir,
-        text_column=dc.text_column,
-        num_val_samples=dc.num_val_samples,
-        seed=dc.seed,
-    )
-    datasets = load_text_dataset(data_cfg)
-
-    train_ds = ChunkGroupDataset(
-        datasets["train"], n_chunks=dc.n_chunks, text_column=dc.text_column
-    )
-    eval_ds = ChunkGroupDataset(
-        datasets["validation"], n_chunks=dc.n_chunks, text_column=dc.text_column
-    )
+    datasets = load_cm_dataset(dc)
+    train_ds = datasets["train"]
+    eval_ds  = datasets["validation"]
 
     print(
         f"Dataset: {len(train_ds):,} train sequences  "
         f"{len(eval_ds):,} eval sequences  "
-        f"(N={dc.n_chunks} chunks each)"
+        f"(N={dc.n_chunks} chunks × {dc.chunk_size_tokens} GPT-2 tokens each)"
     )
 
     collator = CMCollator(tokenizer=ae_tokenizer, max_length=ae_max_length)

@@ -70,6 +70,9 @@ class TrainConfig:
     save_steps: int = 1000
     save_total_limit: int = 3
 
+    metric_for_best_model: Optional[str] = None
+    greater_is_better: Optional[bool] = None  # None → infer from metric name
+
     # Misc
     ema_decay: float = 0.999
     fp16: bool = False
@@ -208,16 +211,35 @@ def save_config(cfg: BottleneckExperimentConfig, path: str | Path) -> None:
 class ConceptDataConfig:
     """Configuration for the Concept Model data pipeline.
 
-    Points at the same pre-chunked FineWeb dataset used by the AE, but
-    groups ``n_chunks`` consecutive chunks into a single CM training sequence.
+    Each CM training sequence consists of ``n_chunks`` consecutive 16-token
+    chunks extracted from the same FineWeb document.  Preprocessing is done
+    once by ``scripts/prepare_cm_dataset.py`` and the result is saved to
+    ``preprocessed_dir``.  Training then loads directly from disk.
     """
 
-    preprocessed_dir: Optional[str] = None
-    n_chunks: int = 64
+    # ---- Source dataset (used by prepare_cm_dataset.py) ----
+    dataset_name: str = "HuggingFaceFW/fineweb"
+    dataset_config: str = "sample-10BT"
     text_column: str = "text"
-    num_val_samples: Optional[int] = 1000
+    cache_dir: Optional[str] = None        # HuggingFace datasets cache root
+
+    # ---- Chunking ----
+    n_chunks: int = 64                     # consecutive chunks per CM sequence
+    chunk_size_tokens: int = 16            # GPT-2 tokens per chunk
+    gpt2_tokenizer_name: str = "gpt2"
+    drop_incomplete_chunks: bool = True
+
+    # ---- Pre-processed sequences (written by prepare_cm_dataset.py) ----
+    preprocessed_dir: Optional[str] = None
+
+    # ---- Dataset limits ----
+    max_docs: Optional[int] = None         # cap documents processed (None = all)
+    num_val_samples: Optional[int] = None
     seed: int = 42
-    dataloader_num_workers: int = 4
+
+    # ---- Processing ----
+    prepare_num_proc: Optional[int] = None
+    preprocess_batch_size: int = 1000
 
 
 @dataclass
@@ -281,3 +303,70 @@ def load_concept_config_from_paths(paths: List[str] | List[Path]) -> ConceptExpe
     if len(paths) == 1:
         return load_concept_config(paths[0])
     return merge_concept_configs(*paths)
+
+
+# ---------------------------------------------------------------------------
+# Hybrid latent reasoning (GPT-2 + AE latents)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HybridLatentDataConfig:
+    dataset_name: str = "booydar/gsm8k"
+    dataset_config: str = "default"
+    task_column: str = "task"
+    cot_column: str = "cot"
+    labels_column: str = "labels"
+    cache_dir: Optional[str] = None
+    reasoning_trigger: str = "!!!!"
+    end_of_thinking_phrase: str = "end of thinking"
+    gpt2_tokenizer_name: str = "openai-community/gpt2"
+    max_prompt_tokens: int = 256
+    max_answer_tokens: int = 128
+    max_cot_steps: int = 16
+    num_train_samples: Optional[int] = None
+    num_val_samples: Optional[int] = None
+    seed: int = 42
+
+
+@dataclass
+class HybridLatentModelConfig:
+    ae_config_path: str = ""
+    ae_checkpoint_path: str = ""
+    pretrained_gpt2: str = "openai-community/gpt2"
+    max_model_seq_len: Optional[int] = None
+    lambda_mse: float = 0.1
+    lambda_answer_ce: float = 1.0
+
+
+@dataclass
+class HybridLatentExperimentConfig:
+    data: HybridLatentDataConfig = field(default_factory=HybridLatentDataConfig)
+    model: HybridLatentModelConfig = field(default_factory=HybridLatentModelConfig)
+    train: TrainConfig = field(default_factory=TrainConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
+
+
+def load_hybrid_latent_config(path: str | Path) -> HybridLatentExperimentConfig:
+    raw = load_yaml(path)
+    return from_dict(data_class=HybridLatentExperimentConfig, data=raw, config=_DACITE_CFG)
+
+
+def merge_hybrid_latent_configs(*paths: str | Path) -> HybridLatentExperimentConfig:
+    merged: dict = {}
+    for p in paths:
+        raw = load_yaml(p)
+        for section, values in raw.items():
+            if section not in merged:
+                merged[section] = {}
+            if isinstance(values, dict):
+                merged[section].update(values)
+            else:
+                merged[section] = values
+    return from_dict(data_class=HybridLatentExperimentConfig, data=merged, config=_DACITE_CFG)
+
+
+def load_hybrid_latent_config_from_paths(paths: List[str] | List[Path]) -> HybridLatentExperimentConfig:
+    if len(paths) == 1:
+        return load_hybrid_latent_config(paths[0])
+    return merge_hybrid_latent_configs(*paths)

@@ -1,27 +1,24 @@
 """Concept Model: transformer that predicts the next AE latent in latent space.
 
 Supports two variants:
-  - ``ConceptModel``:     custom scratch transformer with RoPE, RMSNorm, SwiGLU,
-                          and block-level causal masking.
+  - ``ConceptModel``:     custom scratch transformer with block-level causal masking.
   - ``ConceptModelGPT2``: wraps a pretrained HuggingFace causal-LM backbone
                           (e.g. GPT-2) with input/output projections.
                           Uses standard token-level causal masking from the backbone.
 
 Both variants accept latent sequences of shape ``(B, N*n, d_ae)`` and return
-predicted latent sequences of the same shape.  Input RMSNorm and output RMSNorm
-are included inside each variant.
+predicted latent sequences of the same shape.
 """
 
-from __future__ import annotations
-
-import math
-from typing import Optional
+from typing import List, Optional, Sequence
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from src.utils.config import ConceptModelConfig
+
+from transformers.models.gpt2.modeling_gpt2 import GPT2Model, GPT2LMHeadModel
 
 
 # ---------------------------------------------------------------------------
@@ -127,18 +124,72 @@ def make_block_causal_mask(
     return mask.unsqueeze(0).unsqueeze(0)  # (1, 1, N*n, N*n)
 
 
+def make_variable_block_causal_mask(
+    block_ids: torch.Tensor,
+    dtype: torch.dtype,
+    merge_key_padding_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Additive attention mask from per-position block indices.
+
+    Key ``j`` is visible to query ``i`` iff ``block_ids[j] <= block_ids[i]``
+    (same convention as :func:`make_block_causal_mask`).
+
+    Args:
+        block_ids: ``(B, T)`` int64 — block index per position (non-decreasing along T).
+        dtype:     dtype for the mask (match softmax logits, usually ``float32``).
+        merge_key_padding_mask: Optional ``(B, T)`` with **1** = real token, **0** = pad.
+            Padded **keys** (columns) are masked so they are not attended to. Padded
+            **queries** are not row-masked: masking every column for a padded query
+            makes the attention row all ``-large``, which yields **NaN** softmax
+            (0/0) in mixed precision. Unused positions are excluded from losses
+            instead.
+
+    Returns:
+        ``(B, 1, T, T)`` additive mask (0 = attend, large negative = masked).
+
+    Note:
+        Masked entries use a **finite** bias (``-1e4``), not ``finfo.min``, so
+        bf16/AMP attention does not hit NaN softmax on heavily penalized rows.
+
+        In Transformers >= 4.56, passing a **4D** ``attention_mask`` into
+        ``GPT2Model.forward`` skips built-in causal construction and uses this
+        tensor as-is (see ``masking_utils._preprocess_mask_arguments``).
+    """
+    if block_ids.dim() != 2:
+        raise ValueError(f"block_ids must be (B, T), got {block_ids.shape}")
+    bq = block_ids.unsqueeze(2)  # (B, T, 1) query
+    bk = block_ids.unsqueeze(1)  # (B, 1, T) key
+    allowed = bk <= bq
+    dev = block_ids.device
+    neg = torch.full((), -10000.0, device=dev, dtype=dtype)
+    mask = torch.where(allowed, torch.zeros((), device=dev, dtype=dtype), neg)
+    mask = mask.unsqueeze(1)  # (B, 1, T, T)
+    if merge_key_padding_mask is not None:
+        if merge_key_padding_mask.shape != block_ids.shape:
+            raise ValueError("merge_key_padding_mask must match block_ids shape")
+        pad = (merge_key_padding_mask < 0.5).to(dtype)
+        # Mask padded keys only — do not add a full-row penalty for padded queries.
+        mask = mask + pad.unsqueeze(1).unsqueeze(2) * neg  # (B,1,1,T)
+    return mask
+
+
+def block_sizes_to_ids(block_sizes: Sequence[int], device: torch.device) -> torch.Tensor:
+    """Expand ``[n0, n1, ...]`` into ``(sum_i n_i,)`` block index per position."""
+    ids: List[int] = []
+    for b, sz in enumerate(block_sizes):
+        ids.extend([b] * int(sz))
+    return torch.tensor(ids, device=device, dtype=torch.long)
+
+
 # ---------------------------------------------------------------------------
-# Single transformer block (custom CM)
+# Attention
 # ---------------------------------------------------------------------------
 
-class ConceptModelBlock(nn.Module):
-    """One pre-norm transformer block: RMSNorm → MHA (RoPE) → RMSNorm → SwiGLU."""
-
+class Attention(nn.Module):
     def __init__(
         self,
         d_model: int,
         n_heads: int,
-        d_ff: int,
         rope: RotaryEmbedding,
         dropout: float = 0.0,
     ):
@@ -146,23 +197,19 @@ class ConceptModelBlock(nn.Module):
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.n_heads  = n_heads
         self.head_dim = d_model // n_heads
-        self.scale    = self.head_dim ** -0.5
+        self.dropout  = dropout
 
-        self.norm1 = RMSNorm(d_model)
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.q_proj   = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj   = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj   = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
-        self.attn_drop = nn.Dropout(dropout)
-
-        self.norm2 = RMSNorm(d_model)
-        self.ffn   = SwiGLUFFN(d_model, d_ff, dropout)
 
         self.rope = rope  # shared across all blocks
-
+    
     def _split_heads(self, x: torch.Tensor) -> torch.Tensor:
         B, T, _ = x.shape
-        return x.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)  # (B, H, T, D)
+        return x.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)  # (B, H, T, D_h)
+
 
     def forward(
         self,
@@ -173,9 +220,9 @@ class ConceptModelBlock(nn.Module):
         Args:
             x:         ``(B, T, d_model)``
             attn_mask: additive mask ``(1, 1, T, T)`` or compatible broadcastable shape.
+                       Passed directly to ``F.scaled_dot_product_attention`` as
+                       ``attn_mask``, so 0 = attend, ``-inf`` = masked.
         """
-        residual = x
-        x = self.norm1(x)
         B, T, _ = x.shape
 
         q = self._split_heads(self.q_proj(x))  # (B, H, T, D_h)
@@ -185,16 +232,52 @@ class ConceptModelBlock(nn.Module):
         q = self.rope(q, T)
         k = self.rope(k, T)
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # (B, H, T, T)
-        if attn_mask is not None:
-            scores = scores + attn_mask
-        weights = F.softmax(scores, dim=-1)
-        weights = self.attn_drop(weights)
+        # Uses Flash Attention automatically on supported hardware/dtypes.
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout if self.training else 0.0,
+        )  # (B, H, T, D_h)
 
-        out = torch.matmul(weights, v)                         # (B, H, T, D_h)
         out = out.transpose(1, 2).contiguous().view(B, T, -1)  # (B, T, d_model)
-        x = residual + self.out_proj(out)
+        return self.out_proj(out)
 
+
+# ---------------------------------------------------------------------------
+# Single transformer block (custom CM)
+# ---------------------------------------------------------------------------
+
+
+class ConceptModelBlock(nn.Module):
+    """One pre-norm transformer block: Norm → MHA (RoPE) → Norm → SwiGLU."""
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        d_ff: int,
+        rope: RotaryEmbedding,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(d_model)
+        self.attention = Attention(d_model, n_heads, rope, dropout)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.ffn = SwiGLUFFN(d_model, d_ff, dropout)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            x:         ``(B, T, d_model)``
+            attn_mask: additive mask ``(1, 1, T, T)`` or compatible broadcastable shape.
+                       Passed directly to ``F.scaled_dot_product_attention`` as
+                       ``attn_mask``, so 0 = attend, ``-inf`` = masked.
+        """
+        x = x + self.attention(self.norm1(x), attn_mask)
         x = x + self.ffn(self.norm2(x))
         return x
 
@@ -210,8 +293,6 @@ class ConceptModel(nn.Module):
     ``d_model != d_ae`` linear projections are added. Block-level causal
     masking is used so that all ``n`` tokens within the same latent block
     attend to each other freely, but only to tokens in earlier blocks.
-
-    The input RMSNorm and output RMSNorm are part of this module.
     """
 
     def __init__(
@@ -230,7 +311,8 @@ class ConceptModel(nn.Module):
         self.d_ae           = d_ae
         self.n_latent_tokens = n_latent_tokens
 
-        self.input_norm  = RMSNorm(d_ae)
+        # self.input_norm  = RMSNorm(d_ae)  # encoder uses LayerNorm
+        self.input_norm = nn.LayerNorm(d_ae)
         self.input_proj  = nn.Linear(d_ae, d_model, bias=False) if d_ae != d_model else nn.Identity()
 
         rope = RotaryEmbedding(d_model // n_heads, base=rope_base, max_seq_len=max_seq_len)
@@ -240,7 +322,8 @@ class ConceptModel(nn.Module):
         ])
 
         self.output_proj = nn.Linear(d_model, d_ae, bias=False) if d_ae != d_model else nn.Identity()
-        self.output_norm = RMSNorm(d_ae)
+        # self.output_norm = RMSNorm(d_ae)  # encoder uses LayerNorm
+        self.output_norm = nn.LayerNorm(d_ae)
 
         self._init_weights()
 
@@ -280,6 +363,27 @@ class ConceptModel(nn.Module):
 # GPT-2 (or any HF causal-LM) wrapper
 # ---------------------------------------------------------------------------
 
+class CustomGPT2Model(GPT2Model):
+    """GPT-2 body; use a **4D** ``attention_mask`` for custom (e.g. block) patterns.
+
+    HuggingFace ``GPT2Model`` treats ``attention_mask`` with ``ndim == 4`` as a
+    fully prepared additive mask (see ``create_causal_mask`` / ``_preprocess_mask_arguments``).
+    Do **not** pass a 2D padding mask here if you need block causality — build
+    ``(B, 1, T, T)`` via :func:`make_variable_block_causal_mask` and optionally
+    merge padding there.
+    """
+
+    # Inherits ``forward`` from ``GPT2Model`` so SDPA/eager paths match the installed
+    # Transformers version (incl. ``is_causal=False`` when a 4D mask is present).
+
+
+class CustomGPT2LMHeadModel(GPT2LMHeadModel):
+    def __init__(self, config):
+        super().__init__(config)
+        self.transformer = CustomGPT2Model(config)
+        self.post_init()
+
+
 class ConceptModelGPT2(nn.Module):
     """Wraps a pretrained HuggingFace causal language model as a Concept Model.
 
@@ -297,24 +401,32 @@ class ConceptModelGPT2(nn.Module):
         d_ae: int,
         pretrained_name: str = "gpt2",
         max_seq_len: Optional[int] = None,
+        n_latent_tokens: int = 1,
     ):
         super().__init__()
-        from transformers import AutoConfig, GPT2Model
+        from transformers import AutoConfig
 
         self.d_ae = d_ae
+        self.n_latent_tokens = n_latent_tokens
 
         backbone_cfg = AutoConfig.from_pretrained(pretrained_name)
         d_backbone = backbone_cfg.hidden_size
 
+        model = CustomGPT2LMHeadModel(backbone_cfg)
+
+        pretrained = GPT2LMHeadModel.from_pretrained("openai-community/gpt2")
+        missing, unexpected = model.load_state_dict(pretrained.state_dict(), strict=False)
+
         if max_seq_len is not None and max_seq_len > backbone_cfg.max_position_embeddings:
             backbone_cfg.max_position_embeddings = max_seq_len
 
-        self.input_norm  = RMSNorm(d_ae)
+        self.input_norm  = nn.LayerNorm(d_ae) # encoder uses LayerNorm
         self.input_proj  = nn.Linear(d_ae, d_backbone, bias=False)
-        self.backbone    = GPT2Model.from_pretrained(pretrained_name, config=backbone_cfg)
-        # Drop the built-in wte/wpe — we supply embeddings directly via inputs_embeds
+
+        self.backbone    = model.transformer
+
         self.output_proj = nn.Linear(d_backbone, d_ae, bias=False)
-        self.output_norm = RMSNorm(d_ae)
+        self.output_norm = nn.LayerNorm(d_ae) # encoder uses LayerNorm
 
         nn.init.xavier_uniform_(self.input_proj.weight)
         nn.init.xavier_uniform_(self.output_proj.weight)
@@ -327,9 +439,18 @@ class ConceptModelGPT2(nn.Module):
         Returns:
             ``(B, N*n, d_ae)`` — predicted next-latent sequence.
         """
+
+        B, T, _ = x.shape
+        n = self.n_latent_tokens
+        n_chunks = T // n
+
         x = self.input_norm(x)
         embeds = self.input_proj(x)           # (B, T, d_backbone)
-        out = self.backbone(inputs_embeds=embeds).last_hidden_state  # (B, T, d_backbone)
+
+        attn = make_block_causal_mask(n_chunks, n, x.device).to(dtype=embeds.dtype)
+        attention_mask = attn.expand(B, -1, -1, -1)  # (B, 1, T, T) — 4D for HF GPT-2
+
+        out = self.backbone(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state  # (B, T, d_backbone)
         out = self.output_proj(out)           # (B, T, d_ae)
         out = self.output_norm(out)
         return out
@@ -366,4 +487,40 @@ def build_concept_model(cfg: ConceptModelConfig, d_ae: int, n_latent_tokens: int
         return ConceptModelGPT2(
             d_ae=d_ae,
             pretrained_name=cfg.cm_type,
+            n_latent_tokens=n_latent_tokens,
         )
+
+
+def load_concept_weights(
+    checkpoint_path: str,
+    concept_model: nn.Module,
+    device: str = "cpu",
+) -> None:
+    """Load Concept Model weights from safetensors or PyTorch ``.pt`` in-place.
+
+    Checkpoints written by ``ConceptTrainer`` use keys prefixed with
+    ``concept_model.``; those prefixes are stripped before
+    ``load_state_dict``. If no such keys exist, the full dict is loaded
+    (useful for raw state exports).
+
+    Does not restore optimizer / scheduler — use ``resume_from_checkpoint``
+    for full training state.
+    """
+    if checkpoint_path.endswith(".safetensors"):
+        from safetensors.torch import load_file
+
+        state = load_file(checkpoint_path, device=device)
+    else:
+        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+
+    prefix = "concept_model."
+    if any(k.startswith(prefix) for k in state):
+        inner = {k[len(prefix) :]: v for k, v in state.items() if k.startswith(prefix)}
+    else:
+        inner = dict(state)
+
+    missing, unexpected = concept_model.load_state_dict(inner, strict=False)
+    if unexpected:
+        print("Warning: unexpected keys in checkpoint:", unexpected)
+    if missing:
+        print("Warning: missing keys (not loaded):", missing)

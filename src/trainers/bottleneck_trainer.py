@@ -23,7 +23,13 @@ from transformers import get_constant_schedule_with_warmup
 from src.losses.reconstruction import reconstruction_loss
 from src.losses.semantic import semantic_consistency_loss
 from src.models.bottleneck_ae import BottleneckAE
+from src.utils.best_checkpoint import (
+    default_greater_is_better,
+    is_valid_metric_value,
+    metric_improves,
+)
 from src.utils.config import TrainConfig
+from src.utils.training_steps import optimizer_steps_per_epoch
 
 
 # ---------------------------------------------------------------------------
@@ -101,12 +107,7 @@ class BottleneckTrainer:
             optimizer, num_warmup_steps=train_config.warmup_steps
         )
 
-        # Capture true optimizer-steps-per-epoch before accelerate.prepare() inflates len(train_dl)
-        self._steps_per_epoch = math.ceil(
-            len(train_dl) / train_config.gradient_accumulation_steps
-        )
-
-        # Accelerate wraps core, optimizer, dataloaders, scheduler — NOT repr_encoder
+        # Accelerate wraps core, optimizer, dataloaders, scheduler
         (
             self._core,
             self._optimizer,
@@ -114,6 +115,25 @@ class BottleneckTrainer:
             self._eval_dl,
             self._scheduler,
         ) = self.accelerator.prepare(self._core, optimizer, train_dl, eval_dl, scheduler)
+
+        # Optimizer steps per rank per epoch (tqdm / resume). Do not use len(train_dl)
+        # before prepare — it ignores per-process sharding. Sized datasets: match
+        # DistributedSampler (drop_last=False). Else fall back to prepared loader len.
+        try:
+            n_train = len(train_dataset)  # type: ignore[arg-type]
+        except TypeError:
+            n_train = None
+        if n_train is not None:
+            self._steps_per_epoch = optimizer_steps_per_epoch(
+                n_train,
+                train_config.batch_size,
+                train_config.gradient_accumulation_steps,
+                self.accelerator.num_processes,
+            )
+        else:
+            self._steps_per_epoch = math.ceil(
+                len(self._train_dl) / train_config.gradient_accumulation_steps
+            )
 
         # Move repr_encoder to the same device but keep it outside Accelerate
         if self._repr_encoder is not None:
@@ -132,6 +152,12 @@ class BottleneckTrainer:
                 self._ema = ExponentialMovingAverage(params, decay=train_config.ema_decay)
 
         self._saved_checkpoints: List[str] = []
+
+        # Best checkpoint (HF-style; see TrainConfig.metric_for_best_model)
+        self._best_metric: Optional[float] = None
+        self._best_model_checkpoint: Optional[str] = None
+        self._last_eval_metrics: Optional[Dict[str, float]] = None
+        self._last_eval_step: int = -1
 
     # ------------------------------------------------------------------
     # Forward helpers
@@ -250,6 +276,7 @@ class BottleneckTrainer:
                     if global_step % cfg.save_steps == 0:
                         ckpt_dir = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
                         self.save_checkpoint(ckpt_dir, global_step=global_step, epoch=epoch)
+                        self._maybe_update_best_model_checkpoint(ckpt_dir, global_step)
                         self._rotate_checkpoints()
 
             epoch_bar.close()
@@ -368,6 +395,9 @@ class BottleneckTrainer:
             parts = "  ".join(f"{k}={v:.4f}" for k, v in metrics.items())
             tqdm.write(f"[eval step={step}]  {parts}")
 
+        self._last_eval_metrics = dict(metrics)
+        self._last_eval_step = step if step is not None else -1
+
         return metrics
 
     # ------------------------------------------------------------------
@@ -429,8 +459,14 @@ class BottleneckTrainer:
                     os.path.join(output_dir, "ema_state.pt"),
                 )
 
+            trainer_state = {
+                "global_step": global_step,
+                "epoch": epoch,
+                "best_metric": self._best_metric,
+                "best_model_checkpoint": self._best_model_checkpoint,
+            }
             with open(os.path.join(output_dir, "trainer_state.json"), "w") as f:
-                json.dump({"global_step": global_step, "epoch": epoch}, f, indent=2)
+                json.dump(trainer_state, f, indent=2)
 
             # model.safetensors: our custom format with EMA applied (for inference)
             if save_ema and self._ema is not None:
@@ -497,6 +533,8 @@ class BottleneckTrainer:
         with open(os.path.join(checkpoint_dir, "trainer_state.json")) as f:
             state = json.load(f)
         global_step = state["global_step"]
+        self._best_metric = state.get("best_metric")
+        self._best_model_checkpoint = state.get("best_model_checkpoint")
 
         # Repopulate checkpoint list so rotation works correctly after resume
         self._saved_checkpoints = sorted(
@@ -523,12 +561,63 @@ class BottleneckTrainer:
         )
         return str(candidates[-1]) if candidates else None
 
+    def _checkpoint_paths_equal(self, a: str, b: str) -> bool:
+        try:
+            return os.path.abspath(a) == os.path.abspath(b)
+        except OSError:
+            return a == b
+
+    def _maybe_update_best_model_checkpoint(self, checkpoint_dir: str, global_step: int) -> None:
+        """If eval ran at this step, compare ``metric_for_best_model`` and track best ckpt."""
+        cfg = self.cfg
+        if not cfg.metric_for_best_model:
+            return
+        if self._last_eval_step != global_step or self._last_eval_metrics is None:
+            return
+
+        key = cfg.metric_for_best_model
+        if key not in self._last_eval_metrics:
+            if self.accelerator.is_main_process:
+                tqdm.write(
+                    f"Warning: metric_for_best_model={key!r} not in eval metrics "
+                    f"{list(self._last_eval_metrics.keys())}"
+                )
+            return
+
+        value = float(self._last_eval_metrics[key])
+        if not is_valid_metric_value(value):
+            return
+
+        greater = cfg.greater_is_better
+        if greater is None:
+            greater = default_greater_is_better(key)
+
+        if metric_improves(value, self._best_metric, greater):
+            self._best_metric = value
+            self._best_model_checkpoint = checkpoint_dir
+            if self.accelerator.is_main_process:
+                tqdm.write(
+                    f"*** New best model {key}={value:.6f} — checkpoint: {checkpoint_dir}"
+                )
+
     def _rotate_checkpoints(self):
-        """Remove the oldest checkpoint once save_total_limit is exceeded."""
+        """Remove oldest checkpoints once save_total_limit is exceeded.
+
+        Never deletes ``best_model_checkpoint`` (HF Trainer behavior).
+        """
         limit = self.cfg.save_total_limit
         if not limit or limit <= 0:
             return
+        best = self._best_model_checkpoint
         while len(self._saved_checkpoints) > limit:
-            oldest = self._saved_checkpoints.pop(0)
+            remove_idx = None
+            for i, ckpt in enumerate(self._saved_checkpoints):
+                if best and self._checkpoint_paths_equal(ckpt, best):
+                    continue
+                remove_idx = i
+                break
+            if remove_idx is None:
+                break
+            oldest = self._saved_checkpoints.pop(remove_idx)
             if self.accelerator.is_main_process and os.path.isdir(oldest):
                 shutil.rmtree(oldest)

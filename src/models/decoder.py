@@ -181,7 +181,7 @@ class AutoRegressiveDecoder(nn.Module):
 class ParallelLatentDecoder(nn.Module):
     """Non-autoregressive decoder that reconstructs all tokens from the latent in one pass.
 
-    Mirrors a COSMOS-style decompressor: positions are parameterised only by
+    Positions are parameterised only by their
     positional embeddings and attend to the latent tokens; no token inputs.
     """
 
@@ -210,6 +210,9 @@ class ParallelLatentDecoder(nn.Module):
             [DecoderBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
         )
 
+        causal_mask = torch.zeros(self.max_length, self.max_length, dtype=torch.bool) # No causality
+        self.register_buffer("causal_mask", causal_mask)
+
         self.ln_f = nn.LayerNorm(d_model)
 
         # LM head
@@ -233,37 +236,24 @@ class ParallelLatentDecoder(nn.Module):
         """
         Args:
             latent_tokens:          (B, L, D_lat) encoder latent sequence.
-            decoder_input_ids:      (B, T) token ids, used only to define T.
-            decoder_attention_mask: (B, T) 1 for real, 0 for pad (for pooling).
+            decoder_input_ids:      (B, T) token ids, not used here.
+            decoder_attention_mask: (B, T) 1 for real, 0 for pad, not used here.
 
         Returns:
             logits:     (B, T, V)
             dec_hidden: (B, D) mean-pooled decoder hidden state.
         """
-        B, T = decoder_input_ids.shape
+        B = latent_tokens.shape[0]
         device = latent_tokens.device
 
-        if T > self.max_length:
-            raise ValueError(
-                f"T={T} exceeds max_length={self.max_length} for ParallelLatentDecoder."
-            )
-
         # Output queries: purely positional
-        positions = torch.arange(T, device=device).unsqueeze(0)  # (1, T)
+        positions = torch.arange(self.max_length, device=device).unsqueeze(0)  # (1, max_length)
         x = self.pos_emb(positions)
         x = self.emb_dropout(x)
-        x = x.expand(B, T, -1)  # (B, T, D)
-
-        # No causality: allow every position to see all others
-        causal_mask = torch.zeros(T, T, dtype=torch.bool, device=device)
-
-        self_kp_mask = None
-        if decoder_attention_mask is not None:
-            # Same semantics as in AutoRegressiveDecoder: True = ignore
-            self_kp_mask = decoder_attention_mask.eq(0)
+        x = x.expand(B, self.max_length, -1)  # (B, max_length, D)
 
         for block in self.blocks:
-            x = block(x, latent_tokens, causal_mask, self_kp_mask)
+            x = block(x, latent_tokens, self.causal_mask)
 
         x = self.ln_f(x)
 

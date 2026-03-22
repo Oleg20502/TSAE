@@ -30,6 +30,8 @@ def reconstruction_loss(
     shift_labels = labels[:, 1:].contiguous()
 
     vocab_size = shift_logits.size(-1)
+    if not (shift_labels != ignore_index).any():
+        return torch.zeros((), device=shift_logits.device, dtype=shift_logits.dtype)
     loss = F.cross_entropy(
         shift_logits.view(-1, vocab_size),
         shift_labels.view(-1),
