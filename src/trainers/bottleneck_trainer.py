@@ -29,6 +29,7 @@ from src.utils.best_checkpoint import (
     metric_improves,
 )
 from src.utils.config import TrainConfig
+from src.utils.training_steps import optimizer_steps_per_epoch
 
 
 # ---------------------------------------------------------------------------
@@ -106,11 +107,6 @@ class BottleneckTrainer:
             optimizer, num_warmup_steps=train_config.warmup_steps
         )
 
-        # Capture true optimizer-steps-per-epoch before accelerate.prepare() inflates len(train_dl)
-        self._steps_per_epoch = math.ceil(
-            len(train_dl) / train_config.gradient_accumulation_steps
-        )
-
         # Accelerate wraps core, optimizer, dataloaders, scheduler — NOT repr_encoder
         (
             self._core,
@@ -119,6 +115,25 @@ class BottleneckTrainer:
             self._eval_dl,
             self._scheduler,
         ) = self.accelerator.prepare(self._core, optimizer, train_dl, eval_dl, scheduler)
+
+        # Optimizer steps per rank per epoch (tqdm / resume). Do not use len(train_dl)
+        # before prepare — it ignores per-process sharding. Sized datasets: match
+        # DistributedSampler (drop_last=False). Else fall back to prepared loader len.
+        try:
+            n_train = len(train_dataset)  # type: ignore[arg-type]
+        except TypeError:
+            n_train = None
+        if n_train is not None:
+            self._steps_per_epoch = optimizer_steps_per_epoch(
+                n_train,
+                train_config.batch_size,
+                train_config.gradient_accumulation_steps,
+                self.accelerator.num_processes,
+            )
+        else:
+            self._steps_per_epoch = math.ceil(
+                len(self._train_dl) / train_config.gradient_accumulation_steps
+            )
 
         # Move repr_encoder to the same device but keep it outside Accelerate
         if self._repr_encoder is not None:

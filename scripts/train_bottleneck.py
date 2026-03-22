@@ -65,6 +65,8 @@ def main():
     print(f"Total: {n_enc + n_dec + n_sem_proj:,} trainable / {n_enc + n_dec + n_sem_proj + n_repr:,} all parameters")
     
     datasets = load_text_dataset(cfg.data)
+    print(f"Train samples: {len(datasets['train'])}")
+    print(f"Validation samples: {len(datasets['validation'])}")
     collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
 
     trainer = BottleneckTrainer(

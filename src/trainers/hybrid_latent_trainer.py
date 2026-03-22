@@ -29,6 +29,7 @@ from src.utils.best_checkpoint import (
     metric_improves,
 )
 from src.utils.config import HybridLatentModelConfig, TrainConfig
+from src.utils.training_steps import optimizer_steps_per_epoch
 
 
 class HybridLatentTrainer:
@@ -95,10 +96,6 @@ class HybridLatentTrainer:
             optimizer, num_warmup_steps=train_config.warmup_steps
         )
 
-        self._steps_per_epoch = math.ceil(
-            len(train_dl) / train_config.gradient_accumulation_steps
-        )
-
         (
             self._core,
             self._optimizer,
@@ -106,6 +103,22 @@ class HybridLatentTrainer:
             self._eval_dl,
             self._scheduler,
         ) = self.accelerator.prepare(self._core, optimizer, train_dl, eval_dl, scheduler)
+
+        try:
+            n_train = len(train_dataset)  # type: ignore[arg-type]
+        except TypeError:
+            n_train = None
+        if n_train is not None:
+            self._steps_per_epoch = optimizer_steps_per_epoch(
+                n_train,
+                train_config.batch_size,
+                train_config.gradient_accumulation_steps,
+                self.accelerator.num_processes,
+            )
+        else:
+            self._steps_per_epoch = math.ceil(
+                len(self._train_dl) / train_config.gradient_accumulation_steps
+            )
 
         device = self.accelerator.device
         self._ae_encoder = ae_encoder.to(device)
