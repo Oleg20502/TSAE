@@ -273,7 +273,8 @@ class HybridLatentTrainer:
                 mask = cot_valid[:, j]
             else:
                 tgt = z_end_b
-                mask = cot_valid[:, K_max - 1] if K_max > 0 else torch.ones(B, dtype=torch.bool, device=device)
+                # Every row reaches the end-thinking block in the layout; do not gate on last padded CoT slot.
+                mask = torch.ones(B, dtype=torch.bool, device=device)
 
             if not mask.any():
                 continue
