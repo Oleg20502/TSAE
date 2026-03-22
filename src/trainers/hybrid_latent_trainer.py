@@ -20,6 +20,7 @@ from torch_ema import ExponentialMovingAverage
 from tqdm.auto import tqdm
 from transformers import PreTrainedTokenizerBase, get_constant_schedule_with_warmup
 
+from src.eval.hybrid_latent_metrics import accumulate_hybrid_eval_batch
 from src.losses.reconstruction import reconstruction_loss
 from src.models.concept_model import make_variable_block_causal_mask
 from src.models.hybrid_latent_model import HybridLatentReasoningGPT2
@@ -46,9 +47,11 @@ class HybridLatentTrainer:
         data_collator,
         train_config: TrainConfig,
         end_of_thinking_phrase: str,
+        max_cot_steps: int,
     ):
         self.cfg = train_config
         self.model_cfg = model_cfg
+        self._max_cot_steps = max_cot_steps
         self._n_latent = n_latent_tokens
         self._lambda_mse = model_cfg.lambda_mse
         self._lambda_ans = model_cfg.lambda_answer_ce
@@ -145,6 +148,21 @@ class HybridLatentTrainer:
         self._last_eval_metrics: Optional[Dict[str, float]] = None
         self._last_eval_step: int = -1
 
+    def _zero_eval_accuracy_totals(self, device: torch.device) -> Dict[str, torch.Tensor]:
+        z = lambda: torch.zeros(1, device=device)
+        d: Dict[str, torch.Tensor] = {
+            "answer_em_sum": z(),
+            "answer_em_den": z(),
+            "cot_full_em_sum": z(),
+            "cot_full_em_den": z(),
+            "cot_tok_cor": z(),
+            "cot_tok_tot": z(),
+        }
+        for j in range(1, self._max_cot_steps + 1):
+            d[f"cot_step_{j}_em_sum"] = z()
+            d[f"cot_step_{j}_em_den"] = z()
+        return d
+
     @torch.no_grad()
     def _cache_end_thinking_latent(self) -> None:
         device = self.accelerator.device
@@ -164,7 +182,7 @@ class HybridLatentTrainer:
         z = self._ae_encoder(ids, am)
         mc.set_end_thinking_latent(z)
 
-    def _forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def _forward_activations(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         B = batch["prompt_token_ids"].size(0)
         device = batch["prompt_token_ids"].device
 
@@ -177,8 +195,6 @@ class HybridLatentTrainer:
         with torch.no_grad():
             z_flat = self._ae_encoder(flat_in, flat_m)
         cot_latents = z_flat.view(B, K_max, self._n_latent, z_flat.size(-1))
-        # Unused CoT slots keep cot_m=0; the encoder then masks every text key and
-        # MHA softmax becomes NaN. Never feed those latents into the hybrid backbone.
         valid_k = batch["cot_valid"].unsqueeze(-1).unsqueeze(-1).to(dtype=cot_latents.dtype)
         cot_latents = torch.nan_to_num(cot_latents, nan=0.0, posinf=0.0, neginf=0.0)
         cot_latents = cot_latents * valid_k
@@ -199,7 +215,6 @@ class HybridLatentTrainer:
             batch["answer_attention_mask"],
         )
 
-        # float32 additive mask: avoids bf16/fp16 softmax NaNs when rows are all masked
         attn_4d = make_variable_block_causal_mask(
             block_ids,
             dtype=torch.float32,
@@ -207,10 +222,30 @@ class HybridLatentTrainer:
         )
 
         out = m(inputs_embeds, attn_4d)
-        lm_logits = out["lm_logits"]
-        latent_pred = out["latent_pred"]
-        V = lm_logits.size(-1)
+        return {
+            "lm_logits": out["lm_logits"],
+            "latent_pred": out["latent_pred"],
+            "meta": meta,
+            "cot_latents": cot_latents,
+            "z_end": z_end,
+            "K_max": K_max,
+            "B": B,
+            "device": device,
+        }
 
+    def _loss_from_activations(
+        self, batch: Dict[str, torch.Tensor], act: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        lm_logits = act["lm_logits"]
+        latent_pred = act["latent_pred"]
+        meta = act["meta"]
+        cot_latents = act["cot_latents"]
+        z_end = act["z_end"]
+        K_max = act["K_max"]
+        B = act["B"]
+        device = act["device"]
+
+        V = lm_logits.size(-1)
         shift_logits = lm_logits[:, :-1, :].contiguous()
         shift_labels = batch["lm_labels"][:, 1:].contiguous()
         if (shift_labels != -100).any():
@@ -267,6 +302,10 @@ class HybridLatentTrainer:
             "l_latent_ce": ce_lat.detach(),
             "l_mse": mse_loss.detach(),
         }
+
+    def _forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        act = self._forward_activations(batch)
+        return self._loss_from_activations(batch, act)
 
     def train(self, resume_from_checkpoint: Optional[str] = None):
         cfg = self.cfg
@@ -415,6 +454,8 @@ class HybridLatentTrainer:
         mse_acc = torch.zeros(1, device=device)
         count = torch.zeros(1, device=device)
 
+        acc_totals = self._zero_eval_accuracy_totals(device)
+
         eval_bar = tqdm(
             self._eval_dl,
             desc="Evaluating",
@@ -426,12 +467,23 @@ class HybridLatentTrainer:
         try:
             for batch in eval_bar:
                 with torch.no_grad():
-                    outputs = self._forward(batch)
+                    act = self._forward_activations(batch)
+                    outputs = self._loss_from_activations(batch, act)
+                    stats = accumulate_hybrid_eval_batch(
+                        act["lm_logits"],
+                        act["latent_pred"],
+                        act["meta"],
+                        batch,
+                        self._ae_decoder,
+                    )
                 loss_acc += outputs["loss"].detach()
                 lm_acc += outputs["l_lm"].detach()
                 lce_acc += outputs["l_latent_ce"].detach()
                 mse_acc += outputs["l_mse"].detach()
                 count += 1
+                for k, v in stats.items():
+                    if k in acc_totals:
+                        acc_totals[k] = acc_totals[k] + v.detach()
         finally:
             if self._ema is not None:
                 self._ema.restore()
@@ -441,6 +493,9 @@ class HybridLatentTrainer:
         lce_acc = self.accelerator.reduce(lce_acc, reduction="sum")
         mse_acc = self.accelerator.reduce(mse_acc, reduction="sum")
         count = self.accelerator.reduce(count, reduction="sum")
+
+        for k in list(acc_totals.keys()):
+            acc_totals[k] = self.accelerator.reduce(acc_totals[k], reduction="sum")
 
         eval_loss = (loss_acc / count).item()
         eval_lm = (lm_acc / count).item()
@@ -453,6 +508,31 @@ class HybridLatentTrainer:
             "eval/l_mse": eval_mse,
             "eval/ppl_lm": math.exp(min(eval_lm, 20)),
         }
+
+        den_ans = acc_totals.get("answer_em_den", torch.zeros(1, device=device)).item()
+        if den_ans > 0:
+            metrics["eval/answer_accuracy"] = (
+                acc_totals["answer_em_sum"].item() / den_ans
+            )
+
+        den_cot_full = acc_totals.get("cot_full_em_den", torch.zeros(1, device=device)).item()
+        if den_cot_full > 0:
+            metrics["eval/cot_accuracy"] = (
+                acc_totals["cot_full_em_sum"].item() / den_cot_full
+            )
+
+        den_cot_tok = acc_totals.get("cot_tok_tot", torch.zeros(1, device=device)).item()
+        if den_cot_tok > 0:
+            metrics["eval/cot_token_accuracy"] = (
+                acc_totals["cot_tok_cor"].item() / den_cot_tok
+            )
+
+        for j in range(1, self._max_cot_steps + 1):
+            den_k = acc_totals[f"cot_step_{j}_em_den"].item()
+            if den_k > 0:
+                metrics[f"eval/cot_accuracy_{j}"] = (
+                    acc_totals[f"cot_step_{j}_em_sum"].item() / den_k
+                )
 
         self.accelerator.log(metrics, step=step)
 

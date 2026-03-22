@@ -113,6 +113,7 @@ def main():
         data_collator=collator,
         train_config=tc,
         end_of_thinking_phrase=dc.end_of_thinking_phrase,
+        max_cot_steps=dc.max_cot_steps,
     )
 
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
