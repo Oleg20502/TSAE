@@ -138,12 +138,19 @@ def make_variable_block_causal_mask(
         block_ids: ``(B, T)`` int64 — block index per position (non-decreasing along T).
         dtype:     dtype for the mask (match softmax logits, usually ``float32``).
         merge_key_padding_mask: Optional ``(B, T)`` with **1** = real token, **0** = pad.
-            Padded keys and queries receive ``-inf`` so they do not contribute.
+            Padded **keys** (columns) are masked so they are not attended to. Padded
+            **queries** are not row-masked: masking every column for a padded query
+            makes the attention row all ``-large``, which yields **NaN** softmax
+            (0/0) in mixed precision. Unused positions are excluded from losses
+            instead.
 
     Returns:
-        ``(B, 1, T, T)`` additive mask (0 = attend, ``-inf`` = masked).
+        ``(B, 1, T, T)`` additive mask (0 = attend, large negative = masked).
 
     Note:
+        Masked entries use a **finite** bias (``-1e4``), not ``finfo.min``, so
+        bf16/AMP attention does not hit NaN softmax on heavily penalized rows.
+
         In Transformers >= 4.56, passing a **4D** ``attention_mask`` into
         ``GPT2Model.forward`` skips built-in causal construction and uses this
         tensor as-is (see ``masking_utils._preprocess_mask_arguments``).
@@ -153,16 +160,16 @@ def make_variable_block_causal_mask(
     bq = block_ids.unsqueeze(2)  # (B, T, 1) query
     bk = block_ids.unsqueeze(1)  # (B, 1, T) key
     allowed = bk <= bq
-    min_val = torch.finfo(dtype).min
-    mask = torch.where(allowed, torch.zeros((), device=block_ids.device, dtype=dtype), min_val)
+    dev = block_ids.device
+    neg = torch.full((), -10000.0, device=dev, dtype=dtype)
+    mask = torch.where(allowed, torch.zeros((), device=dev, dtype=dtype), neg)
     mask = mask.unsqueeze(1)  # (B, 1, T, T)
     if merge_key_padding_mask is not None:
         if merge_key_padding_mask.shape != block_ids.shape:
             raise ValueError("merge_key_padding_mask must match block_ids shape")
         pad = (merge_key_padding_mask < 0.5).to(dtype)
-        # mask padded keys (columns) and padded queries (rows)
-        mask = mask + pad.unsqueeze(1).unsqueeze(2) * min_val  # (B,1,1,T) keys
-        mask = mask + pad.unsqueeze(1).unsqueeze(3) * min_val  # (B,1,T,1) queries
+        # Mask padded keys only — do not add a full-row penalty for padded queries.
+        mask = mask + pad.unsqueeze(1).unsqueeze(2) * neg  # (B,1,1,T)
     return mask
 
 

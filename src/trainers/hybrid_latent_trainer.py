@@ -167,7 +167,6 @@ class HybridLatentTrainer:
     def _forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         B = batch["prompt_token_ids"].size(0)
         device = batch["prompt_token_ids"].device
-        dtype = self.accelerator.unwrap_model(self._core).lm.transformer.wte.weight.dtype
 
         cot_in = batch["cot_ae_input_ids"]
         cot_m = batch["cot_ae_attention_mask"]
@@ -178,6 +177,11 @@ class HybridLatentTrainer:
         with torch.no_grad():
             z_flat = self._ae_encoder(flat_in, flat_m)
         cot_latents = z_flat.view(B, K_max, self._n_latent, z_flat.size(-1))
+        # Unused CoT slots keep cot_m=0; the encoder then masks every text key and
+        # MHA softmax becomes NaN. Never feed those latents into the hybrid backbone.
+        valid_k = batch["cot_valid"].unsqueeze(-1).unsqueeze(-1).to(dtype=cot_latents.dtype)
+        cot_latents = torch.nan_to_num(cot_latents, nan=0.0, posinf=0.0, neginf=0.0)
+        cot_latents = cot_latents * valid_k
 
         end_ids = batch["end_phrase_input_ids"]
         end_m = batch["end_phrase_attention_mask"]
@@ -195,9 +199,10 @@ class HybridLatentTrainer:
             batch["answer_attention_mask"],
         )
 
+        # float32 additive mask: avoids bf16/fp16 softmax NaNs when rows are all masked
         attn_4d = make_variable_block_causal_mask(
             block_ids,
-            dtype=dtype,
+            dtype=torch.float32,
             merge_key_padding_mask=seq_m,
         )
 
@@ -208,11 +213,14 @@ class HybridLatentTrainer:
 
         shift_logits = lm_logits[:, :-1, :].contiguous()
         shift_labels = batch["lm_labels"][:, 1:].contiguous()
-        loss_lm = F.cross_entropy(
-            shift_logits.view(-1, V),
-            shift_labels.view(-1),
-            ignore_index=-100,
-        )
+        if (shift_labels != -100).any():
+            loss_lm = F.cross_entropy(
+                shift_logits.float().reshape(-1, V),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            ).to(dtype=lm_logits.dtype)
+        else:
+            loss_lm = torch.zeros((), device=device, dtype=lm_logits.dtype)
 
         lat0 = meta["latent_start"]
         n = meta["n"]
@@ -234,7 +242,9 @@ class HybridLatentTrainer:
 
             if not mask.any():
                 continue
-            mse_terms.append(F.mse_loss(pred_j[mask], tgt[mask]))
+            mse_terms.append(
+                F.mse_loss(pred_j[mask].float(), tgt[mask].float()).to(dtype=pred_j.dtype)
+            )
 
             if j < K_max:
                 dec_in = batch["cot_decoder_input_ids"][mask, j]
@@ -244,7 +254,7 @@ class HybridLatentTrainer:
                 lbl = batch["end_labels"][mask]
 
             logits = self._ae_decoder(latent_tokens=pred_j[mask], decoder_input_ids=dec_in)
-            ce_terms.append(reconstruction_loss(logits, lbl))
+            ce_terms.append(reconstruction_loss(logits.float(), lbl))
 
         mse_loss = torch.stack(mse_terms).mean() if mse_terms else torch.tensor(0.0, device=device)
         ce_lat = torch.stack(ce_terms).mean() if ce_terms else torch.tensor(0.0, device=device)
