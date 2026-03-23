@@ -85,8 +85,13 @@ class BottleneckAE(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """Encode text to latent z of shape (B, n_latent_tokens, d_model)."""
-        return self.encoder(input_ids, attention_mask)
+        """Text to semantic embedding of shape (B, d_model)."""
+        z = self.encoder(input_ids, attention_mask)
+        z_pooled = z.mean(dim=1)
+        if self.sem_proj is not None:
+            return self.sem_proj(z_pooled)
+        else:
+            return z_pooled
 
     @torch.no_grad()
     def generate_greedy(
@@ -109,7 +114,7 @@ class BottleneckAE(nn.Module):
         Returns:
             generated: (B, T') generated token ids.
         """
-        z = self.encode(input_ids, attention_mask)
+        z = self.encoder(input_ids, attention_mask)
         B = z.size(0)
         device = z.device
 

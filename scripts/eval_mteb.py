@@ -188,7 +188,7 @@ def main():
             tokenizer=tokenizer,
             device=args.device,
             max_length=cfg.model.max_length,
-            force_pool = True,
+            force_pool = False,
         )
         model_name = "BottleneckAE"
 
