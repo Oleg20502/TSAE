@@ -7,15 +7,15 @@ model:
   lambda_answer_ce: 1.0
 
 train:
-  output_dir: "outputs/hybrid_latent/test/"
-  init_from_checkpoint: null
+  output_dir: "outputs/hybrid_latent/nl_1_sl_10"
+  init_from_checkpoint: /home/okashurin/okashurin/TSAE/outputs/hybrid_latent/test/checkpoint-60100/model.safetensors
   lr: 1.0e-5
   weight_decay: 0.001
   ema_decay: 0.9999
-  epochs: 10
+  epochs: 20
   warmup_steps: 100
-  batch_size: 8
-  gradient_accumulation_steps: 4
+  batch_size: 64
+  gradient_accumulation_steps: 1
   max_grad_norm: 1.0
   logging_steps: 10
   eval_steps: 100

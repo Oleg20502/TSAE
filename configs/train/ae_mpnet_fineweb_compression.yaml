@@ -2,7 +2,7 @@ model:
   backbone_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
   
-  n_latent_tokens: 4
+  n_latent_tokens: 8
   d_model: 768
   max_length: 16
   noise_std: 0.2
@@ -25,20 +25,21 @@ model:
   decoder_dropout: 0.1
 
 train:
-  output_dir: outputs/comp/nl_4_std_0.2_sl_10
-  init_from_checkpoint: outputs/comp/nl_4_std_0.2_sl_10_test/checkpoint-113500/model.safetensors
+  output_dir: outputs/comp/nl_8_std_0.2_sl_10_try_2
+  init_from_checkpoint: outputs/comp/nl_8_std_0.2_sl_10/checkpoint-416000/model.safetensors
   lr: 1.0e-4
   weight_decay: 0.01
   ema_decay: 0.999
   epochs: 100
   warmup_steps: 1000
-  batch_size: 128
+  batch_size: 32
   gradient_accumulation_steps: 4
   max_grad_norm: 1.0
   logging_steps: 100
   eval_steps: 1000
   save_steps: 1000
   save_total_limit: 2
+  metric_for_best_model: eval/loss
   fp16: false
   bf16: false
   dataloader_num_workers: 16

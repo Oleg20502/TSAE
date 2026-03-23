@@ -3,14 +3,19 @@
 
 Requires Fast tokenizers (return_offsets_mapping). Discards samples if any segment is too short.
 
+Sample building uses multiprocessing (fork on Linux, spawn on Windows) when prepare_num_proc != 1.
+Set prepare_num_proc: 1 in YAML to force single-process (legacy RNG order).
+
 Example:
   conda activate rmt-a100
   python scripts/prepare_hybrid_lm_dataset.py --configs configs/preprocess/hybrid_wiki_k4.yaml
-  # Set data.preprocessed_dir in train config to data.preprocessed_dir from this YAML.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -18,116 +23,13 @@ from pathlib import Path
 import numpy as np
 import yaml
 from datasets import Dataset, load_dataset
-from tqdm import tqdm
 from transformers import AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data.datasets import _chunk_batched, _split_paragraphs_batched
+from src.data.hybrid_lm_sample_build import build_samples_parallel, build_samples_sequential
 from src.utils.config import merge_bottleneck_configs
-
-
-def _take_prefix_by_tokens(
-    text: str,
-    tokenizer,
-    n: int,
-    add_special_tokens: bool = False,
-) -> tuple[str, str] | None:
-    """First ``n`` tokens as text prefix; returns (prefix, remainder) or None if too short."""
-    if n == 0:
-        return "", text
-    enc = tokenizer(
-        text,
-        add_special_tokens=add_special_tokens,
-        return_offsets_mapping=True,
-        truncation=False,
-    )
-    om = enc.get("offset_mapping")
-    if om is None:
-        raise RuntimeError(
-            f"Tokenizer {type(tokenizer).__name__} has no offset_mapping; use a Fast tokenizer."
-        )
-    ids = enc["input_ids"]
-    if len(ids) < n:
-        return None
-    end_char = om[n - 1][1]
-    return text[:end_char], text[end_char:]
-
-
-def try_build_sample(
-    text: str,
-    rng: np.random.Generator,
-    gpt2_tok,
-    ae_tok,
-    prompt_min: int,
-    prompt_max: int,
-    completion_min: int,
-    completion_max: int,
-    max_latent_steps: int,
-    ae_max_length: int,
-) -> dict | None:
-    Lp = int(rng.integers(prompt_min, prompt_max + 1))
-    K = int(rng.integers(0, max_latent_steps + 1))
-    Lc = int(rng.integers(completion_min, completion_max + 1))
-
-    pr = _take_prefix_by_tokens(text, gpt2_tok, Lp)
-    if pr is None:
-        return None
-    prompt_text, rest = pr
-
-    ae_need = K * ae_max_length
-    if ae_need > 0:
-        ae_enc = ae_tok(
-            rest,
-            add_special_tokens=False,
-            return_offsets_mapping=True,
-            truncation=False,
-        )
-        om = ae_enc.get("offset_mapping")
-        if om is None:
-            raise RuntimeError("AE tokenizer must support offset_mapping (Fast tokenizer).")
-        ids_full = ae_enc["input_ids"]
-        if len(ids_full) < ae_need:
-            return None
-        enc_ae = ids_full[:ae_need]
-        end_char = om[ae_need - 1][1]
-        rest = rest[end_char:]
-        latent_steps = []
-        for k in range(K):
-            chunk = enc_ae[k * ae_max_length : (k + 1) * ae_max_length]
-            latent_steps.append(ae_tok.decode(chunk, skip_special_tokens=False))
-    else:
-        latent_steps = []
-
-    g2_enc = gpt2_tok(
-        rest,
-        add_special_tokens=False,
-        return_offsets_mapping=True,
-        truncation=False,
-    )
-    om2 = g2_enc.get("offset_mapping")
-    if om2 is None:
-        raise RuntimeError("GPT-2 tokenizer must support offset_mapping (Fast tokenizer).")
-    ids2 = g2_enc["input_ids"]
-    if len(ids2) < Lc:
-        return None
-    end_c = om2[Lc - 1][1]
-    completion_text = rest[:end_c]
-
-    return {
-        "task": prompt_text,
-        "latent_steps": latent_steps,
-        "labels": completion_text,
-    }
-
-
-def _enough_accepted_for_train_cap(num_accepted: int, dc) -> bool:
-    """True once len(rows) is large enough that post-shuffle split can fill ``num_train_samples``."""
-    if dc.num_train_samples is None:
-        return False
-    v_cfg = dc.num_val_samples if dc.num_val_samples is not None else 2000
-    n_val = min(v_cfg, max(1, num_accepted // 10))
-    return num_accepted - n_val >= dc.num_train_samples
 
 
 def main() -> None:
@@ -157,10 +59,7 @@ def main() -> None:
 
     ae_exp = merge_bottleneck_configs(dc.ae_config_path)
     ae_max_length = int(ae_exp.model.max_length)
-    ae_tok = AutoTokenizer.from_pretrained(ae_exp.model.backbone_name)
-    gpt2_tok = AutoTokenizer.from_pretrained(dc.gpt2_tokenizer_name)
-
-    rng = np.random.default_rng(dc.seed)
+    ae_backbone = ae_exp.model.backbone_name
 
     num_proc = dc.prepare_num_proc or 1
     batch_size = dc.preprocess_batch_size or 2000
@@ -215,42 +114,72 @@ def main() -> None:
         )
     else:
         print("Using dataset as-is (no paragraph/chunk split).")
-    print(f"finished splitting paragraphs")
-    paragraphs = ds[dc.text_column]
+
+    paragraphs = list(ds[dc.text_column])
     print(f"Text rows after preprocessing: {len(paragraphs):,}")
 
     if dc.num_train_samples is not None:
         print(
             "Early exit: will stop once enough accepted samples exist for "
-            f"num_train_samples={dc.num_train_samples} (same val rule as post-shuffle split)."
+            f"num_train_samples={dc.num_train_samples} (between parallel chunks)."
         )
 
-    rows: list[dict] = []
-    early_stop = False
-    for text in tqdm(paragraphs, desc="Building samples"):
-        if not isinstance(text, str) or not text.strip():
-            continue
-        s = text.strip()
-        for _ in range(dc.tries_per_paragraph):
-            sample = try_build_sample(
-                s,
-                rng,
-                gpt2_tok,
-                ae_tok,
-                dc.prompt_min_len,
-                dc.prompt_max_len,
-                dc.completion_min_len,
-                dc.completion_max_len,
-                dc.max_latent_steps,
-                ae_max_length,
-            )
-            if sample is not None:
-                rows.append(sample)
-                if _enough_accepted_for_train_cap(len(rows), dc):
-                    early_stop = True
-                break
-        if early_stop:
-            break
+    use_parallel = dc.prepare_num_proc is None or dc.prepare_num_proc > 1
+    if dc.prepare_num_proc == 1:
+        use_parallel = False
+
+    if use_parallel:
+        if dc.prepare_num_proc is not None and dc.prepare_num_proc > 1:
+            build_workers = dc.prepare_num_proc
+        else:
+            build_workers = max(1, (os.cpu_count() or 8) - 1)
+        if dc.hybrid_build_chunk_size is not None:
+            chunk_sz = dc.hybrid_build_chunk_size
+        else:
+            chunk_sz = max(4096, min(65536, len(paragraphs) // max(1, build_workers * 2) or 65536))
+            if dc.num_train_samples is not None:
+                chunk_sz = min(chunk_sz, 16384)
+        print(
+            f"Parallel sample build: workers={build_workers}, chunk_size={chunk_sz} "
+            f"(set data.hybrid_build_chunk_size / prepare_num_proc to tune)"
+        )
+        rows, early_stop = build_samples_parallel(
+            paragraphs,
+            base_seed=dc.seed,
+            gpt2_tokenizer_name=dc.gpt2_tokenizer_name,
+            ae_backbone_name=ae_backbone,
+            prompt_min=dc.prompt_min_len,
+            prompt_max=dc.prompt_max_len,
+            completion_min=dc.completion_min_len,
+            completion_max=dc.completion_max_len,
+            max_latent_steps=dc.max_latent_steps,
+            ae_max_length=ae_max_length,
+            tries_per_paragraph=dc.tries_per_paragraph,
+            num_workers=build_workers,
+            chunk_size=chunk_sz,
+            num_train_samples=dc.num_train_samples,
+            num_val_samples=dc.num_val_samples,
+        )
+    else:
+        print("Single-process sample build (prepare_num_proc: 1).")
+        gpt2_tok = AutoTokenizer.from_pretrained(dc.gpt2_tokenizer_name)
+        ae_tok = AutoTokenizer.from_pretrained(ae_backbone)
+        rng = np.random.default_rng(dc.seed)
+        rows, early_stop = build_samples_sequential(
+            paragraphs,
+            rng=rng,
+            gpt2_tok=gpt2_tok,
+            ae_tok=ae_tok,
+            prompt_min=dc.prompt_min_len,
+            prompt_max=dc.prompt_max_len,
+            completion_min=dc.completion_min_len,
+            completion_max=dc.completion_max_len,
+            max_latent_steps=dc.max_latent_steps,
+            ae_max_length=ae_max_length,
+            tries_per_paragraph=dc.tries_per_paragraph,
+            num_train_samples=dc.num_train_samples,
+            num_val_samples=dc.num_val_samples,
+        )
 
     if not rows:
         raise SystemExit("No samples produced; increase max_samples, tries_per_paragraph, or text length.")
@@ -284,9 +213,10 @@ def main() -> None:
         "text_column": dc.text_column,
         "preprocess_mode": mode,
         "early_stop_after_accepted": early_stop,
+        "parallel_sample_build": use_parallel,
         "max_latent_steps": dc.max_latent_steps,
         "ae_max_length": ae_max_length,
-        "ae_backbone": ae_exp.model.backbone_name,
+        "ae_backbone": ae_backbone,
         "gpt2_tokenizer_name": dc.gpt2_tokenizer_name,
         "prompt_min_len": dc.prompt_min_len,
         "prompt_max_len": dc.prompt_max_len,

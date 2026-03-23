@@ -110,6 +110,7 @@ def _split_paragraphs_batched(
     if num_proc is not None and num_proc > 1:
         map_kwargs["num_proc"] = num_proc
 
+    print(f"start splitting paragraphs...")
     ds = ds.map(_split_batch, **map_kwargs)
     # Flatten: each row is list of paragraphs
     all_texts = [p for row in ds for p in row[text_column]]

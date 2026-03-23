@@ -15,7 +15,7 @@ model:
   decoder_dropout: 0.1
   noise_std: 0.05
   sigma_type: "rel"
-  feature_dropout_p: 0.1
+  feature_dropout_p: 0.0
   lambda_sem: 0.0
 
 train:

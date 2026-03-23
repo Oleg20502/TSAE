@@ -1,6 +1,6 @@
 # Train hybrid latent on preprocessed Wikipedia-style LM data (max_latent_steps=4).
-# 1) Run: python scripts/prepare_hybrid_lm_dataset.py --output_dir outputs/hybrid_lm/wiki_k4 --max_latent_steps 4 --ae_config_path <same as model.ae_config_path> ...
-# 2) Point data.preprocessed_dir at that folder.
+# 1) Run: python scripts/prepare_hybrid_lm_dataset.py --configs configs/preprocess/hybrid_wiki_k4.yaml
+# 2) Keep data.preprocessed_dir aligned with preprocess YAML data.preprocessed_dir.
 
 model:
   ae_config_path: "/home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml"

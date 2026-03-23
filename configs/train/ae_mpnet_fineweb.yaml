@@ -2,7 +2,7 @@ model:
   backbone_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
   
-  n_latent_tokens: 2
+  n_latent_tokens: 1
   d_model: 768
   max_length: 16
   noise_std: 0.05
@@ -25,25 +25,24 @@ model:
   decoder_dropout: 0.1
 
 train:
-  output_dir: outputs/test_steps/
+  output_dir: outputs/vavae/nl_1_rstd_0.05_sl_10
   init_from_checkpoint: null
   lr: 1.0e-4
   weight_decay: 0.01
   ema_decay: 0.999
   epochs: 100
   warmup_steps: 1000
-  batch_size: 32
-  gradient_accumulation_steps: 4
+  batch_size: 256
+  gradient_accumulation_steps: 1
   max_grad_norm: 1.0
   logging_steps: 100
   eval_steps: 1000
   save_steps: 1000
   save_total_limit: 2
-  
   metric_for_best_model: eval/loss
-  greater_is_better: null  # null → infer from name (loss ↓, accuracy ↑)
+  greater_is_better: null
   fp16: false
-  bf16: false
+  bf16: True
   dataloader_num_workers: 16
   seed: 42
   report_to: tensorboard
