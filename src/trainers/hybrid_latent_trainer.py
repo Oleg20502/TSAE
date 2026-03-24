@@ -408,7 +408,10 @@ class HybridLatentTrainer:
             epoch_bar.close()
             resume_steps_in_epoch = 0
 
-        self.accelerator.end_training()
+        # Do not call end_training() here: it tears down the process group, and
+        # callers may run save_model / save_non_ema_model afterward, which use
+        # wait_for_everyone(). Scripts should call accelerator.end_training()
+        # after final exports.
 
     def _log_train(
         self,

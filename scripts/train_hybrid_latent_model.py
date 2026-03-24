@@ -129,16 +129,19 @@ def main():
         max_cot_steps=dc.max_cot_steps,
     )
 
-    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    try:
+        trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
-    final_ema = tc.output_dir + "/final"
-    trainer.save_model(final_ema)
-    print(f"Saved EMA hybrid model to {final_ema}")
+        final_ema = tc.output_dir + "/final"
+        trainer.save_model(final_ema)
+        print(f"Saved EMA hybrid model to {final_ema}")
 
-    if tc.ema_decay and tc.ema_decay > 0.0:
-        final_raw = tc.output_dir + "/final_raw"
-        trainer.save_non_ema_model(final_raw)
-        print(f"Saved raw weights to {final_raw}")
+        if tc.ema_decay and tc.ema_decay > 0.0:
+            final_raw = tc.output_dir + "/final_raw"
+            trainer.save_non_ema_model(final_raw)
+            print(f"Saved raw weights to {final_raw}")
+    finally:
+        trainer.accelerator.end_training()
 
 
 if __name__ == "__main__":
