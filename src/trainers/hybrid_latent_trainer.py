@@ -273,7 +273,8 @@ class HybridLatentTrainer:
                 mask = cot_valid[:, j]
             else:
                 tgt = z_end_b
-                mask = cot_valid[:, K_max - 1] if K_max > 0 else torch.ones(B, dtype=torch.bool, device=device)
+                # Every row reaches the end-thinking block in the layout; do not gate on last padded CoT slot.
+                mask = torch.ones(B, dtype=torch.bool, device=device)
 
             if not mask.any():
                 continue
@@ -407,7 +408,10 @@ class HybridLatentTrainer:
             epoch_bar.close()
             resume_steps_in_epoch = 0
 
-        self.accelerator.end_training()
+        # Do not call end_training() here: it tears down the process group, and
+        # callers may run save_model / save_non_ema_model afterward, which use
+        # wait_for_everyone(). Scripts should call accelerator.end_training()
+        # after final exports.
 
     def _log_train(
         self,

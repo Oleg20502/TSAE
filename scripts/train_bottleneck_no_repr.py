@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Training script for the Bottleneck autoencoder without a repr encoder."""
+"""Train the Bottleneck autoencoder without a sentence repr encoder (recon-only).
+
+Same stack as ``train_bottleneck.py``, but ``repr_encoder`` and ``sem_proj`` are
+omitted; only reconstruction loss is used (``sent_emb`` is always absent).
+"""
 
 import argparse
 import sys
@@ -12,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data.collators import ARDecoderCollator
 from src.data.datasets import load_text_dataset
 from src.eval.reconstruction_metrics import compute_metrics
-from src.models.bottleneck_ae import build_ae_components
+from src.models.bottleneck_ae import BottleneckAE, build_ae_components, load_ae_weights
 from src.trainers import BottleneckTrainer
 from src.utils.config import load_config, save_config
 
@@ -47,20 +51,33 @@ def main():
     encoder, decoder, latent_aug, lambda_sem = build_ae_components(
         cfg, vocab_size, pad_token_id
     )
-    n_params = sum(p.numel() for p in encoder.parameters()) + sum(
-        p.numel() for p in decoder.parameters()
+    autoencoder = BottleneckAE(
+        encoder,
+        decoder,
+        sem_proj=None,
+        latent_aug=latent_aug,
+        lambda_sem=lambda_sem,
     )
-    print(f"Parameters: {n_params:,} trainable")
+
+    if tc.init_from_checkpoint:
+        print(f"Initializing BottleneckAE from: {tc.init_from_checkpoint}")
+        load_ae_weights(tc.init_from_checkpoint, autoencoder)
+
+    n_enc = sum(p.numel() for p in encoder.parameters())
+    n_dec = sum(p.numel() for p in decoder.parameters())
+    print(
+        f"Parameters: encoder {n_enc:,} trainable; decoder {n_dec:,} trainable; "
+        f"total {n_enc + n_dec:,} trainable"
+    )
 
     datasets = load_text_dataset(cfg.data)
+    print(f"Train samples: {len(datasets['train'])}")
+    print(f"Validation samples: {len(datasets['validation'])}")
     collator = ARDecoderCollator(tokenizer, cfg.model.max_length, cfg.data.text_column)
 
     trainer = BottleneckTrainer(
-        encoder=encoder,
-        decoder=decoder,
+        autoencoder=autoencoder,
         repr_encoder=None,
-        latent_aug=latent_aug,
-        lambda_sem=lambda_sem,
         train_dataset=datasets["train"],
         eval_dataset=datasets["validation"],
         data_collator=collator,
@@ -72,7 +89,7 @@ def main():
 
     final_dir = tc.output_dir + "/final"
     trainer.save_model(final_dir, tokenizer=tokenizer)
-    print(f"Model saved to {final_dir}")
+    print(f"EMA model saved to {final_dir}")
 
     if tc.ema_decay and tc.ema_decay > 0.0:
         final_raw_dir = tc.output_dir + "/final_raw"

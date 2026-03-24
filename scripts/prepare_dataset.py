@@ -63,11 +63,15 @@ def main() -> None:
 
     # Load full split from HF (streaming not used; we subsample first to limit work)
     print("Loading dataset from HuggingFace...")
+    load_kw: dict = {}
+    if dc.cache_dir:
+        load_kw["cache_dir"] = dc.cache_dir
     ds = load_dataset(
         dc.dataset_name,
         dc.dataset_config,
         split="train",
         trust_remote_code=True,
+        **load_kw,
     )
     n_total = len(ds)
     print(f"Loaded {n_total:,} rows.")

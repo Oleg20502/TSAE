@@ -1,3 +1,7 @@
+# Train hybrid latent on preprocessed Wikipedia-style LM data
+# 1) Run: python scripts/prepare_hybrid_lm_dataset.py --configs configs/preprocess/hybrid_wiki_k8.yaml
+# 2) Keep data.preprocessed_dir aligned with preprocess YAML data.preprocessed_dir.
+
 model:
   ae_config_path: "/home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml"
   ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-925000/model.safetensors
@@ -7,40 +11,39 @@ model:
   lambda_answer_ce: 1.0
 
 train:
-  output_dir: "outputs/hybrid_latent/nl_1_sl_10"
-  init_from_checkpoint: /home/okashurin/okashurin/TSAE/outputs/hybrid_latent/test/checkpoint-60100/model.safetensors
-  lr: 1.0e-5
+  output_dir: outputs/hybrid_latent/wiki_k8/nl_1_sl_10/
+  init_from_checkpoint: null
+  lr: 2.0e-5
   weight_decay: 0.001
   ema_decay: 0.9999
-  epochs: 20
+  epochs: 10
   warmup_steps: 100
   batch_size: 64
   gradient_accumulation_steps: 1
   max_grad_norm: 1.0
-  logging_steps: 10
-  eval_steps: 100
-  save_steps: 100
+  logging_steps: 50
+  eval_steps: 500
+  save_steps: 500
   save_total_limit: 2
+  metric_for_best_model: eval/loss
   fp16: false
   bf16: true
-  dataloader_num_workers: 16
+  dataloader_num_workers: 8
   seed: 42
   report_to: tensorboard
-  metric_for_best_model: null
 
 data:
-  dataset_name: "booydar/gsm8k"
-  dataset_config: "default"
-  task_column: "task"
-  cot_column: "cot"
-  labels_column: "labels"
-  cache_dir: null
+  preprocessed_dir: /home/okashurin/okashurin/datasets/wiki_k8
+  prompt_min_len: 32
+  prompt_max_len: 96
+  completion_min_len: 1
+  completion_max_len: 4
   reasoning_trigger: "!!!!"
   end_of_thinking_phrase: "end of thinking"
   gpt2_tokenizer_name: "openai-community/gpt2"
-  max_prompt_tokens: 256
-  max_answer_tokens: 16
-  max_cot_steps: 10
+  max_prompt_tokens: 100
+  max_answer_tokens: 8
+  max_cot_steps: 8
   num_train_samples: null
   num_val_samples: 10000
   seed: 42

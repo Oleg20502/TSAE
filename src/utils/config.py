@@ -23,6 +23,8 @@ class DataConfig:
     num_train_samples: Optional[int] = None  # None = use full split
     num_val_samples: Optional[int] = 2000
     seed: int = 42
+    # HuggingFace datasets cache_dir for load_dataset (optional)
+    cache_dir: Optional[str] = None
     # If set, load train/validation from this dir (from prepare_dataset script); no HF download or paragraph split at train time
     preprocessed_dir: Optional[str] = None
     # Used only by prepare_dataset: max articles to process before paragraph split (avoids processing full 6M+ wiki)
@@ -39,6 +41,18 @@ class DataConfig:
     gpt2_tokenizer_name: str = "gpt2"
     # When preprocess_mode == "chunks": drop last incomplete chunk per document
     drop_incomplete_chunks: bool = True
+
+    # --- prepare_hybrid_lm_dataset.py (ignored by prepare_dataset.py) ---
+    # Bottleneck experiment YAML: backbone tokenizer + model.max_length for AE slices.
+    ae_config_path: Optional[str] = None
+    max_latent_steps: Optional[int] = None
+    prompt_min_len: int = 32
+    prompt_max_len: int = 96
+    completion_min_len: int = 1
+    completion_max_len: int = 4
+    tries_per_paragraph: int = 8
+    # prepare_hybrid_lm_dataset: paragraphs per Pool chunk (early stop between chunks). None = script default.
+    hybrid_build_chunk_size: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +332,13 @@ class HybridLatentDataConfig:
     cot_column: str = "cot"
     labels_column: str = "labels"
     cache_dir: Optional[str] = None
+    # When set, load train/validation from prepare_hybrid_lm_dataset output (GeneralHybridLatentCollator).
+    preprocessed_dir: Optional[str] = None
+    text_column: str = "text"
+    prompt_min_len: int = 32
+    prompt_max_len: int = 96
+    completion_min_len: int = 1
+    completion_max_len: int = 4
     reasoning_trigger: str = "!!!!"
     end_of_thinking_phrase: str = "end of thinking"
     gpt2_tokenizer_name: str = "openai-community/gpt2"

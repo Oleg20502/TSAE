@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Train hybrid latent reasoning model (GPT-2 + frozen bottleneck AE on GSM8K-style data).
+"""Train hybrid latent reasoning model (GPT-2 + frozen bottleneck AE).
+
+GSM8K: default dataset from HuggingFace + ``HybridLatentCollator``.
+LM / Wikipedia: set ``data.preprocessed_dir`` to ``prepare_hybrid_lm_dataset.py`` output + ``GeneralHybridLatentCollator`` (auto).
 
 Usage:
     conda activate rmt-a100
     accelerate launch scripts/train_hybrid_latent_model.py --config configs/train/hybrid_gsm8k.yaml
+    accelerate launch scripts/train_hybrid_latent_model.py --config configs/train/hybrid_wikipedia_k4.yaml
 """
 
 import argparse
@@ -15,7 +19,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.data.hybrid_latent_collators import HybridLatentCollator
+from src.data.hybrid_latent_collators import GeneralHybridLatentCollator, HybridLatentCollator
 from src.data.hybrid_latent_datasets import load_hybrid_latent_dataset
 from src.models.bottleneck_ae import load_bottleneck_model
 from src.models.hybrid_latent_model import HybridLatentReasoningGPT2
@@ -93,13 +97,22 @@ def main():
     train_ds = datasets["train"]
     eval_ds = datasets["validation"]
 
-    collator = HybridLatentCollator(
-        gpt2_tok=gpt2_tok,
-        ae_tok=ae_tokenizer,
-        ae_max_length=ae_max_length,
-        n_latent_tokens=n_latent_tokens,
-        cfg=dc,
-    )
+    if dc.preprocessed_dir:
+        collator = GeneralHybridLatentCollator(
+            gpt2_tok=gpt2_tok,
+            ae_tok=ae_tokenizer,
+            ae_max_length=ae_max_length,
+            n_latent_tokens=n_latent_tokens,
+            cfg=dc,
+        )
+    else:
+        collator = HybridLatentCollator(
+            gpt2_tok=gpt2_tok,
+            ae_tok=ae_tokenizer,
+            ae_max_length=ae_max_length,
+            n_latent_tokens=n_latent_tokens,
+            cfg=dc,
+        )
 
     trainer = HybridLatentTrainer(
         model=model,
@@ -116,16 +129,19 @@ def main():
         max_cot_steps=dc.max_cot_steps,
     )
 
-    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    try:
+        trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
-    final_ema = tc.output_dir + "/final"
-    trainer.save_model(final_ema)
-    print(f"Saved EMA hybrid model to {final_ema}")
+        final_ema = tc.output_dir + "/final"
+        trainer.save_model(final_ema)
+        print(f"Saved EMA hybrid model to {final_ema}")
 
-    if tc.ema_decay and tc.ema_decay > 0.0:
-        final_raw = tc.output_dir + "/final_raw"
-        trainer.save_non_ema_model(final_raw)
-        print(f"Saved raw weights to {final_raw}")
+        if tc.ema_decay and tc.ema_decay > 0.0:
+            final_raw = tc.output_dir + "/final_raw"
+            trainer.save_non_ema_model(final_raw)
+            print(f"Saved raw weights to {final_raw}")
+    finally:
+        trainer.accelerator.end_training()
 
 
 if __name__ == "__main__":

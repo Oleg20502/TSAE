@@ -1,11 +1,12 @@
-"""GSM8K-style hybrid latent dataset (task / cot / labels)."""
+"""Hybrid latent datasets: GSM8K from HuggingFace or preprocessed LM (Wikipedia-style) from disk."""
 
 from __future__ import annotations
 
 import re
-from typing import Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Union
 
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from torch.utils.data import Dataset
 
 from src.utils.config import HybridLatentDataConfig
@@ -36,7 +37,19 @@ class HybridLatentGSM8KDataset(Dataset):
         }
 
 
-def load_hybrid_latent_dataset(cfg: HybridLatentDataConfig) -> Dict[str, HybridLatentGSM8KDataset]:
+def load_hybrid_latent_dataset(cfg: HybridLatentDataConfig) -> Dict[str, Union[HybridLatentGSM8KDataset, Any]]:
+    if cfg.preprocessed_dir:
+        root = Path(cfg.preprocessed_dir)
+        train = load_from_disk(str(root / "train"))
+        val = load_from_disk(str(root / "validation"))
+        if cfg.num_train_samples is not None:
+            n = min(cfg.num_train_samples, len(train))
+            train = train.shuffle(seed=cfg.seed).select(range(n))
+        if cfg.num_val_samples is not None:
+            n = min(cfg.num_val_samples, len(val))
+            val = val.shuffle(seed=cfg.seed + 1).select(range(n))
+        return {"train": train, "validation": val}
+
     load_kw: Dict = {}
     if cfg.cache_dir:
         load_kw["cache_dir"] = cfg.cache_dir
