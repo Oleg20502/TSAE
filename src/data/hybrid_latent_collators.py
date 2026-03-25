@@ -59,8 +59,8 @@ class HybridLatentCollator:
         if eos is None:
             eos = bos
 
-        ae_pad = self.ae_tok.pad_token_id
-        ae_bos = self.ae_tok.bos_token_id
+        ae_pad = self.ae_tok.pad_token_id or 0
+        ae_bos = self.ae_tok.cls_token_id or self.ae_tok.bos_token_id or 101
 
         B = len(batch)
         prompt_ids = torch.zeros(B, self.P, dtype=torch.long)
@@ -163,8 +163,8 @@ class GeneralHybridLatentCollator(HybridLatentCollator):
         if eos is None:
             eos = bos
 
-        ae_pad = self.ae_tok.pad_token_id
-        ae_bos = self.ae_tok.bos_token_id
+        ae_pad = self.ae_tok.pad_token_id or 0
+        ae_bos = self.ae_tok.cls_token_id or self.ae_tok.bos_token_id or 101
 
         B = len(batch)
         prompt_ids = torch.zeros(B, self.P, dtype=torch.long)
