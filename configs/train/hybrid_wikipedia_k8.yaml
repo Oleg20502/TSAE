@@ -8,7 +8,6 @@ model:
   pretrained_gpt2: "openai-community/gpt2"
   max_model_seq_len: null
   lambda_mse: 0.1
-  lambda_answer_ce: 1.0
 
 train:
   output_dir: outputs/hybrid_latent_2/wiki_k8/nl_1_sl_0.1/

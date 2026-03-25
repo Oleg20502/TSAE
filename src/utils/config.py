@@ -357,7 +357,6 @@ class HybridLatentModelConfig:
     pretrained_gpt2: str = "openai-community/gpt2"
     max_model_seq_len: Optional[int] = None
     lambda_mse: float = 0.1
-    lambda_answer_ce: float = 1.0
 
 
 @dataclass

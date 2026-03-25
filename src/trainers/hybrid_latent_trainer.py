@@ -21,7 +21,7 @@ from tqdm.auto import tqdm
 from transformers import PreTrainedTokenizerBase, get_constant_schedule_with_warmup
 
 from src.eval.hybrid_latent_metrics import accumulate_hybrid_eval_batch
-from src.losses.reconstruction import reconstruction_loss
+from src.losses.reconstruction import reconstruction_cross_entropy_stats
 from src.models.concept_model import make_variable_block_causal_mask
 from src.models.hybrid_latent_model import HybridLatentReasoningGPT2
 from src.utils.best_checkpoint import (
@@ -54,7 +54,6 @@ class HybridLatentTrainer:
         self._max_cot_steps = max_cot_steps
         self._n_latent = n_latent_tokens
         self._lambda_mse = model_cfg.lambda_mse
-        self._lambda_ans = model_cfg.lambda_answer_ce
         self._ae_tokenizer = ae_tokenizer
         self._end_phrase = end_of_thinking_phrase
 
@@ -167,8 +166,6 @@ class HybridLatentTrainer:
     def _cache_end_thinking_latent(self) -> None:
         device = self.accelerator.device
         mc = self.accelerator.unwrap_model(self._core)
-        # Must match encoder.pos_emb length (BottleneckEncoder.max_length); longer
-        # sequences OOB the position embedding table (see tok_emb + pos_emb in encoder).
         ae_max_len = int(self._ae_encoder.max_length)
         enc = self._ae_tokenizer(
             self._end_phrase,
@@ -199,11 +196,6 @@ class HybridLatentTrainer:
         cot_latents = torch.nan_to_num(cot_latents, nan=0.0, posinf=0.0, neginf=0.0)
         cot_latents = cot_latents * valid_k
 
-        end_ids = batch["end_phrase_input_ids"]
-        end_m = batch["end_phrase_attention_mask"]
-        with torch.no_grad():
-            z_end = self._ae_encoder(end_ids[:1], end_m[:1])
-
         m = self.accelerator.unwrap_model(self._core)
         inputs_embeds, block_ids, seq_m, meta = m.build_inputs_embeds_and_masks(
             batch["prompt_token_ids"],
@@ -227,7 +219,7 @@ class HybridLatentTrainer:
             "latent_pred": out["latent_pred"],
             "meta": meta,
             "cot_latents": cot_latents,
-            "z_end": z_end,
+            "z_end": m.get_end_thinking_latent(),
             "K_max": K_max,
             "B": B,
             "device": device,
@@ -249,12 +241,17 @@ class HybridLatentTrainer:
         shift_logits = lm_logits[:, :-1, :].contiguous()
         shift_labels = batch["lm_labels"][:, 1:].contiguous()
         if (shift_labels != -100).any():
-            loss_lm = F.cross_entropy(
+            ce_lm_sum = F.cross_entropy(
                 shift_logits.float().reshape(-1, V),
-                shift_labels.view(-1),
+                shift_labels.reshape(-1),
                 ignore_index=-100,
-            ).to(dtype=lm_logits.dtype)
+                reduction="sum",
+            )
+            n_lm = (shift_labels != -100).sum()
+            loss_lm = (ce_lm_sum / n_lm.float()).to(dtype=lm_logits.dtype)
         else:
+            ce_lm_sum = torch.zeros((), device=device, dtype=torch.float32)
+            n_lm = torch.zeros((), device=device, dtype=torch.long)
             loss_lm = torch.zeros((), device=device, dtype=lm_logits.dtype)
 
         lat0 = meta["latent_start"]
@@ -262,7 +259,8 @@ class HybridLatentTrainer:
         cot_valid = batch["cot_valid"]
 
         mse_terms: List[torch.Tensor] = []
-        ce_terms: List[torch.Tensor] = []
+        ce_lat_sum = torch.zeros((), device=device, dtype=torch.float32)
+        n_lat = torch.zeros((), device=device, dtype=torch.long)
 
         z_end_b = z_end.expand(B, -1, -1).to(dtype=latent_pred.dtype)
 
@@ -290,12 +288,19 @@ class HybridLatentTrainer:
                 lbl = batch["end_labels"][mask]
 
             logits = self._ae_decoder(latent_tokens=pred_j[mask], decoder_input_ids=dec_in)
-            ce_terms.append(reconstruction_loss(logits.float(), lbl))
+            s, nc = reconstruction_cross_entropy_stats(logits, lbl)
+            ce_lat_sum = ce_lat_sum + s.to(device)
+            n_lat = n_lat + nc.to(device)
 
         mse_loss = torch.stack(mse_terms).mean() if mse_terms else torch.tensor(0.0, device=device)
-        ce_lat = torch.stack(ce_terms).mean() if ce_terms else torch.tensor(0.0, device=device)
+        if n_lat.item() > 0:
+            ce_lat = (ce_lat_sum / n_lat.float()).to(dtype=lm_logits.dtype)
+        else:
+            ce_lat = torch.zeros((), device=device, dtype=lm_logits.dtype)
 
-        loss = self._lambda_ans * loss_lm + ce_lat + self._lambda_mse * mse_loss
+        n_ce = (n_lm + n_lat).float().clamp(min=1.0)
+        loss_ce = ((ce_lm_sum + ce_lat_sum) / n_ce).to(dtype=lm_logits.dtype)
+        loss = loss_ce + self._lambda_mse * mse_loss
 
         return {
             "loss": loss,

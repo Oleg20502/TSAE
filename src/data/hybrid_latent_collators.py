@@ -59,7 +59,7 @@ class HybridLatentCollator:
         if eos is None:
             eos = bos
 
-        ae_pad = self.ae_tok.pad_token_id or 0
+        ae_pad = self.ae_tok.pad_token_id
         ae_bos = self.ae_tok.bos_token_id
 
         B = len(batch)
@@ -74,6 +74,7 @@ class HybridLatentCollator:
         ans_ids = torch.zeros(B, self.A, dtype=torch.long)
         ans_m = torch.zeros(B, self.A, dtype=torch.float32)
 
+        # End of thinking phrase processing
         end_enc = self.ae_tok(
             self.cfg.end_of_thinking_phrase,
             max_length=self.ae_max_length,
@@ -87,14 +88,10 @@ class HybridLatentCollator:
         end_lbl[end_ids == ae_pad] = -100
         end_dec = torch.full_like(end_ids, ae_pad)
         end_dec[0] = ae_bos
-        if end_ids.size(0) > 1:
-            end_dec[1:] = end_ids[:-1]
 
         for i, row in enumerate(batch):
-            task = row["task"] or ""
-            steps = parse_cot_steps(row["cot"] or "")
-            if len(steps) == 0:
-                steps = ["0"]
+            task = row["task"]
+            steps = parse_cot_steps(row["cot"])
             steps = steps[: self.K]
 
             pt = self.gpt2_tok(task, add_special_tokens=False)["input_ids"]
@@ -121,7 +118,7 @@ class HybridLatentCollator:
                 cot_dec_in[i, k, 0] = ae_bos
                 cot_dec_in[i, k, 1:] = ids[:-1]
 
-            ans = row["labels"] or ""
+            ans = row["labels"]
             at = self.gpt2_tok.encode(ans, add_special_tokens=False)
             full = [bos] + at + [eos]
             a_tensor, a_mask = self._pad_gpt2(full, self.A, pad_gpt, padding_side="right")
@@ -166,7 +163,7 @@ class GeneralHybridLatentCollator(HybridLatentCollator):
         if eos is None:
             eos = bos
 
-        ae_pad = self.ae_tok.pad_token_id or 0
+        ae_pad = self.ae_tok.pad_token_id
         ae_bos = self.ae_tok.bos_token_id
 
         B = len(batch)
