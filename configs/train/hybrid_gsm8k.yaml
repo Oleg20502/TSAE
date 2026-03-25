@@ -1,15 +1,15 @@
 model:
-  ae_config_path: "/home/okashurin/okashurin/TSAE/outputs/comp/nl_8_std_0.2_sl_10/config.yaml"
-  ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/comp/nl_8_std_0.2_sl_10/checkpoint-416000/model.safetensors
+  ae_config_path: "/home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml"
+  ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-925000/model.safetensors
   pretrained_gpt2: "openai-community/gpt2"
   max_model_seq_len: null
-  lambda_mse: 0.0
+  lambda_mse: 0.1
   lambda_answer_ce: 1.0
 
 train:
-  output_dir: "outputs/hybrid_latent/nl_1_sl_0"
-  init_from_checkpoint: /home/okashurin/okashurin/TSAE/outputs/hybrid_latent/test/checkpoint-60100/model.safetensors
-  lr: 1.0e-5
+  output_dir: "outputs/hybrid_latent_2/nl_1_sl_0.1"
+  init_from_checkpoint: null
+  lr: 2.0e-5
   weight_decay: 0.001
   ema_decay: 0.9999
   epochs: 100
@@ -21,6 +21,7 @@ train:
   eval_steps: 200
   save_steps: 200
   save_total_limit: 2
+  metric_for_best_model: eval/loss
   fp16: false
   bf16: true
   dataloader_num_workers: 16

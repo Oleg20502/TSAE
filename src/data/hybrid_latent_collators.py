@@ -33,15 +33,22 @@ class HybridLatentCollator:
         self.T = self.P + self.L_trig + (1 + self.K) * self.n_latent_tokens + self.A
         self.answer_start = self.P + self.L_trig + (1 + self.K) * self.n_latent_tokens
 
-    def _pad_gpt2(self, ids: List[int], max_len: int, pad_id: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def _pad_gpt2(self, ids: List[int], max_len: int, pad_id: int, padding_side: str = "right") -> tuple[torch.Tensor, torch.Tensor]:
         ids = ids[:max_len]
-        mask = torch.zeros(max_len, dtype=torch.float32)
         L = len(ids)
-        if L > 0:
-            mask[:L] = 1.0
-        if L < max_len:
-            ids = ids + [pad_id] * (max_len - L)
-        return torch.tensor(ids, dtype=torch.long), mask
+        n_pad = max_len - L
+        if n_pad > 0:
+            if padding_side == "left":
+                padded_ids = [pad_id] * n_pad + ids
+                mask = torch.cat([torch.zeros(n_pad, dtype=torch.float32), torch.ones(L, dtype=torch.float32)])
+            else:
+                padded_ids = ids + [pad_id] * n_pad
+                mask = torch.cat([torch.ones(L, dtype=torch.float32), torch.zeros(n_pad, dtype=torch.float32)])
+        else:
+            padded_ids = ids
+            mask = torch.ones(max_len, dtype=torch.float32)
+        return torch.tensor(padded_ids, dtype=torch.long), mask
+
 
     def __call__(self, batch: List[HybridLatentBatchRow]) -> Dict[str, Any]:
         pad_gpt = self.gpt2_tok.pad_token_id or self.gpt2_tok.eos_token_id or 0
@@ -53,7 +60,7 @@ class HybridLatentCollator:
             eos = bos
 
         ae_pad = self.ae_tok.pad_token_id or 0
-        ae_bos = self.ae_tok.cls_token_id or self.ae_tok.bos_token_id or 101
+        ae_bos = self.ae_tok.bos_token_id
 
         B = len(batch)
         prompt_ids = torch.zeros(B, self.P, dtype=torch.long)
@@ -91,7 +98,7 @@ class HybridLatentCollator:
             steps = steps[: self.K]
 
             pt = self.gpt2_tok(task, add_special_tokens=False)["input_ids"]
-            p_tensor, p_mask = self._pad_gpt2(pt, self.P, pad_gpt)
+            p_tensor, p_mask = self._pad_gpt2(pt, self.P, pad_gpt, padding_side="left")
             prompt_ids[i] = p_tensor
             prompt_m[i] = p_mask
 
@@ -117,7 +124,7 @@ class HybridLatentCollator:
             ans = row["labels"] or ""
             at = self.gpt2_tok.encode(ans, add_special_tokens=False)
             full = [bos] + at + [eos]
-            a_tensor, a_mask = self._pad_gpt2(full, self.A, pad_gpt)
+            a_tensor, a_mask = self._pad_gpt2(full, self.A, pad_gpt, padding_side="right")
             ans_ids[i] = a_tensor
             ans_m[i] = a_mask
 
@@ -147,35 +154,8 @@ class HybridLatentCollator:
 
 
 @dataclass
-class GeneralHybridLatentCollator:
+class GeneralHybridLatentCollator(HybridLatentCollator):
     """Same tensors as ``HybridLatentCollator``; latent steps from ``latent_steps`` list (preprocessed LM)."""
-
-    gpt2_tok: PreTrainedTokenizerBase
-    ae_tok: PreTrainedTokenizerBase
-    ae_max_length: int
-    n_latent_tokens: int
-    cfg: HybridLatentDataConfig
-
-    def __post_init__(self) -> None:
-        dc = self.cfg
-        self.P = dc.max_prompt_tokens
-        self.K = dc.max_cot_steps
-        self.A = dc.max_answer_tokens
-        enc = self.gpt2_tok(dc.reasoning_trigger, add_special_tokens=False)
-        self.trigger_ids: List[int] = enc["input_ids"]
-        self.L_trig = len(self.trigger_ids)
-        self.T = self.P + self.L_trig + (1 + self.K) * self.n_latent_tokens + self.A
-        self.answer_start = self.P + self.L_trig + (1 + self.K) * self.n_latent_tokens
-
-    def _pad_gpt2(self, ids: List[int], max_len: int, pad_id: int) -> tuple[torch.Tensor, torch.Tensor]:
-        ids = ids[:max_len]
-        mask = torch.zeros(max_len, dtype=torch.float32)
-        L = len(ids)
-        if L > 0:
-            mask[:L] = 1.0
-        if L < max_len:
-            ids = ids + [pad_id] * (max_len - L)
-        return torch.tensor(ids, dtype=torch.long), mask
 
     def __call__(self, batch: List[HybridLatentBatchRow]) -> Dict[str, Any]:
         pad_gpt = self.gpt2_tok.pad_token_id or self.gpt2_tok.eos_token_id or 0
@@ -187,7 +167,7 @@ class GeneralHybridLatentCollator:
             eos = bos
 
         ae_pad = self.ae_tok.pad_token_id or 0
-        ae_bos = self.ae_tok.cls_token_id or self.ae_tok.bos_token_id or 101
+        ae_bos = self.ae_tok.bos_token_id
 
         B = len(batch)
         prompt_ids = torch.zeros(B, self.P, dtype=torch.long)
@@ -233,7 +213,7 @@ class GeneralHybridLatentCollator:
             steps = steps[: self.K]
 
             pt = self.gpt2_tok(task, add_special_tokens=False)["input_ids"]
-            p_tensor, p_mask = self._pad_gpt2(pt, self.P, pad_gpt)
+            p_tensor, p_mask = self._pad_gpt2(pt, self.P, pad_gpt, padding_side="left")
             prompt_ids[i] = p_tensor
             prompt_m[i] = p_mask
 
@@ -261,7 +241,7 @@ class GeneralHybridLatentCollator:
                 ans = str(ans)
             at = self.gpt2_tok.encode(ans, add_special_tokens=False)
             full = [bos] + at + [eos]
-            a_tensor, a_mask = self._pad_gpt2(full, self.A, pad_gpt)
+            a_tensor, a_mask = self._pad_gpt2(full, self.A, pad_gpt, padding_side="right")
             ans_ids[i] = a_tensor
             ans_m[i] = a_mask
 
