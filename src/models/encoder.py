@@ -93,7 +93,7 @@ class BottleneckEncoder(nn.Module):
     Uses N blocks of self-attention on text + cross-attention for n_latent_tokens
     learned latent queries to gather information from the text.
 
-    Returns the latent sequence of shape ``(B, n_latent_tokens, d_latent)``.
+    Returns the latent sequence of shape ``(B, n_latent_tokens, d_model)``.
     """
 
     def __init__(

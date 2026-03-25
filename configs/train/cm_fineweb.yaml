@@ -1,0 +1,42 @@
+model:
+  ae_config_path: "/home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml"
+  ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-925000/model.safetensors
+
+  cm_type: "custom"
+
+  d_model: 768
+  n_heads: 12
+  n_layers: 6
+  ff_dim: 3072
+  rope_base: 10000.0
+  dropout: 0.1
+
+  lambda_mse: 10.0
+
+train:
+  output_dir: "outputs/concept_model/mse_10.0"
+  init_from_checkpoint: null
+  lr: 1.0e-4
+  weight_decay: 0.01
+  ema_decay: 0.9999
+  epochs: 1000
+  warmup_steps: 100
+  batch_size: 16
+  gradient_accumulation_steps: 4
+  max_grad_norm: 1.0
+  logging_steps: 100
+  eval_steps: 1000
+  save_steps: 1000
+  save_total_limit: 2
+  fp16: True
+  bf16: false
+  dataloader_num_workers: 16
+  seed: 42
+  report_to: tensorboard
+
+data:
+  preprocessed_dir: "/home/okashurin/okashurin/datasets/fineweb_sequences_nc_32_ml_16"
+  n_chunks: 32
+  chunk_size_tokens: 16
+  text_column: "text"
+  seed: 42

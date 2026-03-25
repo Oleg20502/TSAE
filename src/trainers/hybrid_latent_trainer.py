@@ -1,4 +1,6 @@
-"""Lightweight custom trainer for the Bottleneck autoencoder using Accelerate."""
+"""Accelerate trainer: hybrid GPT-2 + frozen AE (latent reasoning + answer LM)."""
+
+from __future__ import annotations
 
 import json
 import math
@@ -6,65 +8,57 @@ import os
 import shutil
 from dataclasses import asdict
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
-import numpy as np
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 from accelerate import Accelerator
-from safetensors.torch import save_file
+from safetensors.torch import load_model, save_model
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch_ema import ExponentialMovingAverage
 from tqdm.auto import tqdm
-from transformers import get_constant_schedule_with_warmup
+from transformers import PreTrainedTokenizerBase, get_constant_schedule_with_warmup
 
-from src.losses.reconstruction import reconstruction_loss
-from src.losses.semantic import semantic_consistency_loss
-from src.models.bottleneck_ae import BottleneckAE
+from src.eval.hybrid_latent_metrics import accumulate_hybrid_eval_batch
+from src.losses.reconstruction import reconstruction_cross_entropy_stats
+from src.models.concept_model import make_variable_block_causal_mask
+from src.models.hybrid_latent_model import HybridLatentReasoningGPT2
 from src.utils.best_checkpoint import (
     default_greater_is_better,
     is_valid_metric_value,
     metric_improves,
 )
-from src.utils.config import TrainConfig
+from src.utils.config import HybridLatentModelConfig, TrainConfig
 from src.utils.training_steps import optimizer_steps_per_epoch
 
 
-# ---------------------------------------------------------------------------
-# Trainer
-# ---------------------------------------------------------------------------
-
-class BottleneckTrainer:
-    """Lightweight Accelerate-based trainer for the Bottleneck autoencoder.
-
-    Takes encoder, decoder, and repr_encoder as separate arguments.
-    repr_encoder is used only to produce frozen semantic targets; it is
-    never wrapped by Accelerate, never optimized, and never saved.
-    """
-
+class HybridLatentTrainer:
     def __init__(
         self,
-        autoencoder: BottleneckAE,
-        repr_encoder: Optional[nn.Module],
+        model: HybridLatentReasoningGPT2,
+        ae_encoder: torch.nn.Module,
+        ae_decoder: torch.nn.Module,
+        ae_tokenizer: PreTrainedTokenizerBase,
+        n_latent_tokens: int,
+        model_cfg: HybridLatentModelConfig,
         train_dataset,
         eval_dataset,
         data_collator,
         train_config: TrainConfig,
-        compute_metrics: Optional[Callable] = None,
+        end_of_thinking_phrase: str,
+        max_cot_steps: int,
     ):
         self.cfg = train_config
-        self.compute_metrics_fn = compute_metrics
+        self.model_cfg = model_cfg
+        self._max_cot_steps = max_cot_steps
+        self._n_latent = n_latent_tokens
+        self._lambda_mse = model_cfg.lambda_mse
+        self._ae_tokenizer = ae_tokenizer
+        self._end_phrase = end_of_thinking_phrase
 
-        self._core = autoencoder
+        self._core = model
 
-        # repr_encoder is kept separate — frozen, on device, excluded from saves
-        self._repr_encoder = repr_encoder
-
-        # ------------------------------------------------------------------
-        # Accelerator
-        # ------------------------------------------------------------------
         mixed_precision = (
             "fp16" if train_config.fp16 else ("bf16" if train_config.bf16 else "no")
         )
@@ -80,9 +74,6 @@ class BottleneckTrainer:
             project_dir=train_config.output_dir,
         )
 
-        # ------------------------------------------------------------------
-        # Optimizer, dataloaders, scheduler
-        # ------------------------------------------------------------------
         optimizer = AdamW(
             self._core.parameters(),
             lr=train_config.lr,
@@ -107,7 +98,6 @@ class BottleneckTrainer:
             optimizer, num_warmup_steps=train_config.warmup_steps
         )
 
-        # Accelerate wraps core, optimizer, dataloaders, scheduler
         (
             self._core,
             self._optimizer,
@@ -116,9 +106,6 @@ class BottleneckTrainer:
             self._scheduler,
         ) = self.accelerator.prepare(self._core, optimizer, train_dl, eval_dl, scheduler)
 
-        # Optimizer steps per rank per epoch (tqdm / resume). Do not use len(train_dl)
-        # before prepare — it ignores per-process sharding. Sized datasets: match
-        # DistributedSampler (drop_last=False). Else fall back to prepared loader len.
         try:
             n_train = len(train_dataset)  # type: ignore[arg-type]
         except TypeError:
@@ -135,16 +122,19 @@ class BottleneckTrainer:
                 len(self._train_dl) / train_config.gradient_accumulation_steps
             )
 
-        # Move repr_encoder to the same device but keep it outside Accelerate
-        if self._repr_encoder is not None:
-            self._repr_encoder = self._repr_encoder.to(self.accelerator.device)
-            self._repr_encoder.eval()
-            for p in self._repr_encoder.parameters():
-                p.requires_grad = False
+        device = self.accelerator.device
+        self._ae_encoder = ae_encoder.to(device)
+        self._ae_encoder.eval()
+        for p in self._ae_encoder.parameters():
+            p.requires_grad = False
 
-        # ------------------------------------------------------------------
-        # EMA
-        # ------------------------------------------------------------------
+        self._ae_decoder = ae_decoder.to(device)
+        self._ae_decoder.eval()
+        for p in self._ae_decoder.parameters():
+            p.requires_grad = False
+
+        self._cache_end_thinking_latent()
+
         self._ema: Optional[ExponentialMovingAverage] = None
         if train_config.ema_decay and train_config.ema_decay > 0.0:
             params = [p for p in self._core.parameters() if p.requires_grad]
@@ -152,46 +142,184 @@ class BottleneckTrainer:
                 self._ema = ExponentialMovingAverage(params, decay=train_config.ema_decay)
 
         self._saved_checkpoints: List[str] = []
-
-        # Best checkpoint (HF-style; see TrainConfig.metric_for_best_model)
         self._best_metric: Optional[float] = None
         self._best_model_checkpoint: Optional[str] = None
         self._last_eval_metrics: Optional[Dict[str, float]] = None
         self._last_eval_step: int = -1
 
-    # ------------------------------------------------------------------
-    # Forward helpers
-    # ------------------------------------------------------------------
+    def _zero_eval_accuracy_totals(self, device: torch.device) -> Dict[str, torch.Tensor]:
+        z = lambda: torch.zeros(1, device=device)
+        d: Dict[str, torch.Tensor] = {
+            "answer_em_sum": z(),
+            "answer_em_den": z(),
+            "cot_full_em_sum": z(),
+            "cot_full_em_den": z(),
+            "cot_tok_cor": z(),
+            "cot_tok_tot": z(),
+        }
+        for j in range(1, self._max_cot_steps + 1):
+            d[f"cot_step_{j}_em_sum"] = z()
+            d[f"cot_step_{j}_em_den"] = z()
+        return d
 
-    def _get_sent_emb(self, batch: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
-        """Run the frozen repr_encoder to get sentence embeddings (no_grad)."""
-        if self._repr_encoder is None:
-            return None
+    @torch.no_grad()
+    def _cache_end_thinking_latent(self) -> None:
+        device = self.accelerator.device
+        mc = self.accelerator.unwrap_model(self._core)
+        ae_max_len = int(self._ae_encoder.max_length)
+        enc = self._ae_tokenizer(
+            self._end_phrase,
+            max_length=ae_max_len,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        ids = enc["input_ids"].to(device)
+        am = enc["attention_mask"].to(device)
+        z = self._ae_encoder(ids, am)
+        mc.set_end_thinking_latent(z)
+
+    def _forward_activations(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        B = batch["prompt_token_ids"].size(0)
+        device = batch["prompt_token_ids"].device
+
+        cot_in = batch["cot_ae_input_ids"]
+        cot_m = batch["cot_ae_attention_mask"]
+        K_max = cot_in.size(1)
+        T_ae = cot_in.size(2)
+        flat_in = cot_in.view(B * K_max, T_ae)
+        flat_m = cot_m.view(B * K_max, T_ae)
         with torch.no_grad():
-            return self._repr_encoder.encode(batch["input_ids"], batch["attention_mask"])
+            z_flat = self._ae_encoder(flat_in, flat_m)
+        cot_latents = z_flat.view(B, K_max, self._n_latent, z_flat.size(-1))
+        valid_k = batch["cot_valid"].unsqueeze(-1).unsqueeze(-1).to(dtype=cot_latents.dtype)
+        cot_latents = torch.nan_to_num(cot_latents, nan=0.0, posinf=0.0, neginf=0.0)
+        cot_latents = cot_latents * valid_k
 
-    def _forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        sent_emb = self._get_sent_emb(batch)
-        return self._core(
-            input_ids=batch["input_ids"],
-            attention_mask=batch["attention_mask"],
-            decoder_input_ids=batch["decoder_input_ids"],
-            labels=batch["labels"],
-            decoder_attention_mask=batch.get("decoder_attention_mask"),
-            sent_emb=sent_emb,
+        m = self.accelerator.unwrap_model(self._core)
+        inputs_embeds, block_ids, seq_m, meta = m.build_inputs_embeds_and_masks(
+            batch["prompt_token_ids"],
+            batch["prompt_attention_mask"],
+            batch["trigger_token_ids"],
+            cot_latents,
+            batch["cot_valid"],
+            batch["answer_token_ids"],
+            batch["answer_attention_mask"],
         )
 
-    # ------------------------------------------------------------------
-    # Training loop
-    # ------------------------------------------------------------------
+        attn_4d = make_variable_block_causal_mask(
+            block_ids,
+            dtype=torch.float32,
+            merge_key_padding_mask=seq_m,
+        )
+
+        out = m(inputs_embeds, attn_4d)
+        return {
+            "lm_logits": out["lm_logits"],
+            "latent_pred": out["latent_pred"],
+            "meta": meta,
+            "cot_latents": cot_latents,
+            "z_end": m.get_end_thinking_latent(),
+            "K_max": K_max,
+            "B": B,
+            "device": device,
+        }
+
+    def _loss_from_activations(
+        self, batch: Dict[str, torch.Tensor], act: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        lm_logits = act["lm_logits"]
+        latent_pred = act["latent_pred"]
+        meta = act["meta"]
+        cot_latents = act["cot_latents"]
+        z_end = act["z_end"]
+        K_max = act["K_max"]
+        B = act["B"]
+        device = act["device"]
+
+        V = lm_logits.size(-1)
+        shift_logits = lm_logits[:, :-1, :].contiguous()
+        shift_labels = batch["lm_labels"][:, 1:].contiguous()
+        if (shift_labels != -100).any():
+            ce_lm_sum = F.cross_entropy(
+                shift_logits.float().reshape(-1, V),
+                shift_labels.reshape(-1),
+                ignore_index=-100,
+                reduction="sum",
+            )
+            n_lm = (shift_labels != -100).sum()
+            loss_lm = (ce_lm_sum / n_lm.float()).to(dtype=lm_logits.dtype)
+        else:
+            ce_lm_sum = torch.zeros((), device=device, dtype=torch.float32)
+            n_lm = torch.zeros((), device=device, dtype=torch.long)
+            loss_lm = torch.zeros((), device=device, dtype=lm_logits.dtype)
+
+        lat0 = meta["latent_start"]
+        n = meta["n"]
+        cot_valid = batch["cot_valid"]
+
+        mse_terms: List[torch.Tensor] = []
+        ce_lat_sum = torch.zeros((), device=device, dtype=torch.float32)
+        n_lat = torch.zeros((), device=device, dtype=torch.long)
+
+        z_end_b = z_end.expand(B, -1, -1).to(dtype=latent_pred.dtype)
+
+        for j in range(K_max + 1):
+            pred_j = latent_pred[:, lat0 + j * n : lat0 + (j + 1) * n]
+            if j < K_max:
+                tgt = cot_latents[:, j]
+                mask = cot_valid[:, j]
+            else:
+                tgt = z_end_b
+                # Every row reaches the end-thinking block in the layout; do not gate on last padded CoT slot.
+                mask = torch.ones(B, dtype=torch.bool, device=device)
+
+            if not mask.any():
+                continue
+            mse_terms.append(
+                F.mse_loss(pred_j[mask].float(), tgt[mask].float()).to(dtype=pred_j.dtype)
+            )
+
+            if j < K_max:
+                dec_in = batch["cot_decoder_input_ids"][mask, j]
+                lbl = batch["cot_labels"][mask, j]
+            else:
+                dec_in = batch["end_decoder_input_ids"][mask]
+                lbl = batch["end_labels"][mask]
+
+            logits = self._ae_decoder(latent_tokens=pred_j[mask], decoder_input_ids=dec_in)
+            s, nc = reconstruction_cross_entropy_stats(logits, lbl)
+            ce_lat_sum = ce_lat_sum + s.to(device)
+            n_lat = n_lat + nc.to(device)
+
+        mse_loss = torch.stack(mse_terms).mean() if mse_terms else torch.tensor(0.0, device=device)
+        if n_lat.item() > 0:
+            ce_lat = (ce_lat_sum / n_lat.float()).to(dtype=lm_logits.dtype)
+        else:
+            ce_lat = torch.zeros((), device=device, dtype=lm_logits.dtype)
+
+        n_ce = (n_lm + n_lat).float().clamp(min=1.0)
+        loss_ce = ((ce_lm_sum + ce_lat_sum) / n_ce).to(dtype=lm_logits.dtype)
+        loss = loss_ce + self._lambda_mse * mse_loss
+
+        return {
+            "loss": loss,
+            "l_lm": loss_lm.detach(),
+            "l_latent_ce": ce_lat.detach(),
+            "l_mse": mse_loss.detach(),
+        }
+
+    def _forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        act = self._forward_activations(batch)
+        return self._loss_from_activations(batch, act)
 
     def train(self, resume_from_checkpoint: Optional[str] = None):
         cfg = self.cfg
-        self.accelerator.init_trackers("bottleneck_ae", config=asdict(cfg))
+        self.accelerator.init_trackers("hybrid_latent", config=asdict(cfg))
 
         global_step = 0
         start_epoch = 0
-        resume_steps_in_epoch = 0  # optimizer steps already done in start_epoch
+        resume_steps_in_epoch = 0
 
         if resume_from_checkpoint is not None:
             if resume_from_checkpoint == "latest":
@@ -201,14 +329,13 @@ class BottleneckTrainer:
                 start_epoch = global_step // self._steps_per_epoch
                 resume_steps_in_epoch = global_step % self._steps_per_epoch
 
-        log_loss_sum = log_l_recon_sum = log_l_sem_sum = log_gnorm_sum = 0.0
+        log_loss_sum = log_lm_sum = log_lce_sum = log_mse_sum = log_gnorm_sum = 0.0
         log_micro_steps = 0
         last_grad_norm = 0.0
 
         for epoch in range(start_epoch, cfg.epochs):
             self._core.train()
 
-            # Skip already-processed batches when resuming mid-epoch
             if epoch == start_epoch and resume_steps_in_epoch > 0:
                 batches_to_skip = resume_steps_in_epoch * cfg.gradient_accumulation_steps
                 train_dl_epoch = self.accelerator.skip_first_batches(
@@ -242,17 +369,14 @@ class BottleneckTrainer:
                     self._scheduler.step()
                     self._optimizer.zero_grad()
 
-                # Accumulate logging values at micro-step granularity
                 log_loss_sum += loss.detach().item()
-                log_l_recon_sum += outputs["l_recon"].item()
-                if "l_sem" in outputs:
-                    log_l_sem_sum += outputs["l_sem"].item()
+                log_lm_sum += outputs["l_lm"].item()
+                log_lce_sum += outputs["l_latent_ce"].item()
+                log_mse_sum += outputs["l_mse"].item()
                 log_micro_steps += 1
 
                 if self.accelerator.sync_gradients:
-                    # Advance the bar once per optimizer step
-                    postfix: Dict[str, str] = {"loss": f"{loss.detach().item():.4f}"}
-                    epoch_bar.set_postfix(postfix)
+                    epoch_bar.set_postfix({"loss": f"{loss.detach().item():.4f}"})
                     epoch_bar.update(1)
 
                     log_gnorm_sum += last_grad_norm
@@ -262,11 +386,16 @@ class BottleneckTrainer:
 
                     if global_step % cfg.logging_steps == 0:
                         self._log_train(
-                            global_step, epoch,
-                            log_loss_sum, log_l_recon_sum, log_l_sem_sum,
-                            log_gnorm_sum, log_micro_steps,
+                            global_step,
+                            epoch,
+                            log_loss_sum,
+                            log_lm_sum,
+                            log_lce_sum,
+                            log_mse_sum,
+                            log_gnorm_sum,
+                            log_micro_steps,
                         )
-                        log_loss_sum = log_l_recon_sum = log_l_sem_sum = log_gnorm_sum = 0.0
+                        log_loss_sum = log_lm_sum = log_lce_sum = log_mse_sum = log_gnorm_sum = 0.0
                         log_micro_steps = 0
 
                     if global_step % cfg.eval_steps == 0:
@@ -274,50 +403,51 @@ class BottleneckTrainer:
                         self._core.train()
 
                     if global_step % cfg.save_steps == 0:
-                        ckpt_dir = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
+                        ckpt_dir = os.path.join(
+                            cfg.output_dir, f"checkpoint-{global_step}"
+                        )
                         self.save_checkpoint(ckpt_dir, global_step=global_step, epoch=epoch)
                         self._maybe_update_best_model_checkpoint(ckpt_dir, global_step)
                         self._rotate_checkpoints()
 
             epoch_bar.close()
-            resume_steps_in_epoch = 0  # only skip batches in the first partial epoch
+            resume_steps_in_epoch = 0
 
-        self.accelerator.end_training()
+        # Do not call end_training() here: it tears down the process group, and
+        # callers may run save_model / save_non_ema_model afterward, which use
+        # wait_for_everyone(). Scripts should call accelerator.end_training()
+        # after final exports.
 
     def _log_train(
         self,
         step: int,
         epoch: int,
         loss_sum: float,
-        l_recon_sum: float,
-        l_sem_sum: float,
+        lm_sum: float,
+        lce_sum: float,
+        mse_sum: float,
         gnorm_sum: float,
         n: int,
     ):
         n = max(n, 1)
         log_dict = {
             "train/loss": loss_sum / n,
-            "train/l_recon": l_recon_sum / n,
+            "train/l_lm": lm_sum / n,
+            "train/l_latent_ce": lce_sum / n,
+            "train/l_mse": mse_sum / n,
             "train/grad_norm": gnorm_sum / n,
             "train/lr": self._scheduler.get_last_lr()[0],
             "epoch": epoch,
         }
-        if self._repr_encoder is not None:
-            log_dict["train/l_sem"] = l_sem_sum / n
-
         self.accelerator.log(log_dict, step=step)
 
         if self.accelerator.is_main_process:
-            sem_str = f"  l_sem={l_sem_sum/n:.4f}" if self._repr_encoder else ""
             tqdm.write(
                 f"epoch={epoch + 1}  step={step}"
-                f"  loss={loss_sum/n:.4f}  l_recon={l_recon_sum/n:.4f}{sem_str}"
+                f"  loss={loss_sum/n:.4f}  l_lm={lm_sum/n:.4f}"
+                f"  l_latent_ce={lce_sum/n:.4f}  l_mse={mse_sum/n:.4f}"
                 f"  gnorm={gnorm_sum/n:.3f}  lr={self._scheduler.get_last_lr()[0]:.2e}"
             )
-
-    # ------------------------------------------------------------------
-    # Evaluation loop
-    # ------------------------------------------------------------------
 
     def evaluate(self, step: Optional[int] = None) -> Dict[str, float]:
         self._core.eval()
@@ -326,15 +456,14 @@ class BottleneckTrainer:
             self._ema.store()
             self._ema.copy_to()
 
-        # Tensor accumulators (allows correct all-reduce across GPUs)
         device = self.accelerator.device
         loss_acc = torch.zeros(1, device=device)
-        l_recon_acc = torch.zeros(1, device=device)
-        l_sem_acc = torch.zeros(1, device=device)
+        lm_acc = torch.zeros(1, device=device)
+        lce_acc = torch.zeros(1, device=device)
+        mse_acc = torch.zeros(1, device=device)
         count = torch.zeros(1, device=device)
 
-        all_preds: List[np.ndarray] = []
-        all_labels: List[np.ndarray] = []
+        acc_totals = self._zero_eval_accuracy_totals(device)
 
         eval_bar = tqdm(
             self._eval_dl,
@@ -347,47 +476,72 @@ class BottleneckTrainer:
         try:
             for batch in eval_bar:
                 with torch.no_grad():
-                    outputs = self._forward(batch)
-
+                    act = self._forward_activations(batch)
+                    outputs = self._loss_from_activations(batch, act)
+                    stats = accumulate_hybrid_eval_batch(
+                        act["lm_logits"],
+                        act["latent_pred"],
+                        act["meta"],
+                        batch,
+                        self._ae_decoder,
+                    )
                 loss_acc += outputs["loss"].detach()
-                l_recon_acc += outputs["l_recon"].detach()
-                if "l_sem" in outputs:
-                    l_sem_acc += outputs["l_sem"].detach()
+                lm_acc += outputs["l_lm"].detach()
+                lce_acc += outputs["l_latent_ce"].detach()
+                mse_acc += outputs["l_mse"].detach()
                 count += 1
-
-                if self.compute_metrics_fn is not None:
-                    pred_ids = outputs["logits"].argmax(dim=-1)  # (B, T)
-                    pred_ids = self.accelerator.gather_for_metrics(pred_ids)
-                    labels = self.accelerator.gather_for_metrics(batch["labels"])
-                    if self.accelerator.is_main_process:
-                        all_preds.append(pred_ids.cpu().numpy())
-                        all_labels.append(labels.cpu().numpy())
+                for k, v in stats.items():
+                    if k in acc_totals:
+                        acc_totals[k] = acc_totals[k] + v.detach()
         finally:
             if self._ema is not None:
                 self._ema.restore()
 
-        # Average across all processes
         loss_acc = self.accelerator.reduce(loss_acc, reduction="sum")
-        l_recon_acc = self.accelerator.reduce(l_recon_acc, reduction="sum")
-        l_sem_acc = self.accelerator.reduce(l_sem_acc, reduction="sum")
+        lm_acc = self.accelerator.reduce(lm_acc, reduction="sum")
+        lce_acc = self.accelerator.reduce(lce_acc, reduction="sum")
+        mse_acc = self.accelerator.reduce(mse_acc, reduction="sum")
         count = self.accelerator.reduce(count, reduction="sum")
 
-        eval_loss = (loss_acc / count).item()
+        for k in list(acc_totals.keys()):
+            acc_totals[k] = self.accelerator.reduce(acc_totals[k], reduction="sum")
 
+        eval_loss = (loss_acc / count).item()
+        eval_lm = (lm_acc / count).item()
+        eval_lce = (lce_acc / count).item()
+        eval_mse = (mse_acc / count).item()
         metrics: Dict[str, float] = {
             "eval/loss": eval_loss,
-            "eval/l_recon": (l_recon_acc / count).item(),
-            "eval/perplexity": math.exp(min(eval_loss, 20)),
+            "eval/l_lm": eval_lm,
+            "eval/l_latent_ce": eval_lce,
+            "eval/l_mse": eval_mse,
+            "eval/ppl_lm": math.exp(min(eval_lm, 20)),
         }
-        if self._repr_encoder is not None:
-            metrics["eval/l_sem"] = (l_sem_acc / count).item()
 
-        if self.compute_metrics_fn is not None and self.accelerator.is_main_process and all_preds:
-            predictions = np.concatenate(all_preds, axis=0)
-            label_ids = np.concatenate(all_labels, axis=0)
-            ep = SimpleNamespace(predictions=predictions, label_ids=label_ids)
-            extra = self.compute_metrics_fn(ep)
-            metrics.update({f"eval/{k}": v for k, v in extra.items()})
+        den_ans = acc_totals.get("answer_em_den", torch.zeros(1, device=device)).item()
+        if den_ans > 0:
+            metrics["eval/answer_accuracy"] = (
+                acc_totals["answer_em_sum"].item() / den_ans
+            )
+
+        den_cot_full = acc_totals.get("cot_full_em_den", torch.zeros(1, device=device)).item()
+        if den_cot_full > 0:
+            metrics["eval/cot_accuracy"] = (
+                acc_totals["cot_full_em_sum"].item() / den_cot_full
+            )
+
+        den_cot_tok = acc_totals.get("cot_tok_tot", torch.zeros(1, device=device)).item()
+        if den_cot_tok > 0:
+            metrics["eval/cot_token_accuracy"] = (
+                acc_totals["cot_tok_cor"].item() / den_cot_tok
+            )
+
+        for j in range(1, self._max_cot_steps + 1):
+            den_k = acc_totals[f"cot_step_{j}_em_den"].item()
+            if den_k > 0:
+                metrics[f"eval/cot_accuracy_{j}"] = (
+                    acc_totals[f"cot_step_{j}_em_sum"].item() / den_k
+                )
 
         self.accelerator.log(metrics, step=step)
 
@@ -400,56 +554,12 @@ class BottleneckTrainer:
 
         return metrics
 
-    # ------------------------------------------------------------------
-    # Saving
-    # ------------------------------------------------------------------
-
-    def _build_state_dict(self) -> Dict[str, torch.Tensor]:
-        """Collect encoder + decoder + sem_proj weights.
-
-        repr_encoder is intentionally excluded.
-
-        The decoder's lm_head.weight is dropped when it is the same
-        storage as tok_emb.weight so safetensors does not raise a
-        duplicate-pointer error. load_ae_weights re-ties the
-        weights on load.
-        """
-        core = self.accelerator.unwrap_model(self._core)
-        sd: Dict[str, torch.Tensor] = {}
-
-        for k, v in core.encoder.state_dict().items():
-            sd[f"encoder.{k}"] = v
-
-        decoder_sd = core.decoder.state_dict()
-        if (
-            hasattr(core.decoder, "lm_head")
-            and hasattr(core.decoder, "tok_emb")
-            and core.decoder.lm_head.weight is core.decoder.tok_emb.weight
-        ):
-            del decoder_sd["lm_head.weight"]
-        for k, v in decoder_sd.items():
-            sd[f"decoder.{k}"] = v
-
-        if core.sem_proj is not None:
-            for k, v in core.sem_proj.state_dict().items():
-                sd[f"sem_proj.{k}"] = v
-
-        return sd
-
     def save_checkpoint(
         self, output_dir: str, global_step: int = 0, epoch: int = 0, save_ema: bool = True
     ):
-        """Save a full training checkpoint (model + optimizer + scheduler + RNG + EMA).
-
-        accelerator.save_state() is a collective call — all processes must reach it.
-        Model weights (model.safetensors), EMA state, and trainer_state.json are
-        written by the main process only.
-        """
         self.accelerator.wait_for_everyone()
         os.makedirs(output_dir, exist_ok=True)
 
-        # Saves _TrainableCore weights, optimizer, scheduler, and per-process RNG states.
-        # Works correctly with DeepSpeed sharded optimizer states.
         self.accelerator.save_state(output_dir)
 
         if self.accelerator.is_main_process:
@@ -468,13 +578,13 @@ class BottleneckTrainer:
             with open(os.path.join(output_dir, "trainer_state.json"), "w") as f:
                 json.dump(trainer_state, f, indent=2)
 
-            # model.safetensors: our custom format with EMA applied (for inference)
             if save_ema and self._ema is not None:
                 self._ema.store()
                 self._ema.copy_to()
             try:
-                save_file(
-                    self._build_state_dict(),
+                core = self.accelerator.unwrap_model(self._core)
+                save_model(
+                    core,
                     os.path.join(output_dir, "model.safetensors"),
                 )
             finally:
@@ -483,8 +593,7 @@ class BottleneckTrainer:
 
             self._saved_checkpoints.append(output_dir)
 
-    def save_model(self, output_dir: str, tokenizer=None):
-        """Save final model weights with EMA applied (no optimizer/scheduler state)."""
+    def save_model(self, output_dir: str):
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
             os.makedirs(output_dir, exist_ok=True)
@@ -492,35 +601,26 @@ class BottleneckTrainer:
                 self._ema.store()
                 self._ema.copy_to()
             try:
-                save_file(
-                    self._build_state_dict(),
+                core = self.accelerator.unwrap_model(self._core)
+                save_model(
+                    core,
                     os.path.join(output_dir, "model.safetensors"),
                 )
             finally:
                 if self._ema is not None:
                     self._ema.restore()
-            if tokenizer is not None:
-                tokenizer.save_pretrained(output_dir)
 
-    def save_non_ema_model(self, output_dir: str, tokenizer=None):
-        """Save final raw (non-EMA) weights for continued training."""
+    def save_non_ema_model(self, output_dir: str):
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
             os.makedirs(output_dir, exist_ok=True)
-            save_file(
-                self._build_state_dict(),
+            core = self.accelerator.unwrap_model(self._core)
+            save_model(
+                core,
                 os.path.join(output_dir, "model.safetensors"),
             )
-            if tokenizer is not None:
-                tokenizer.save_pretrained(output_dir)
 
     def load_checkpoint(self, checkpoint_dir: str) -> int:
-        """Load full training state from a checkpoint directory.
-
-        Restores model weights, optimizer, scheduler, RNG states, and EMA.
-        Returns the global_step at which the checkpoint was saved.
-        """
-        # Collective call — restores _TrainableCore, optimizer, scheduler, RNG
         self.accelerator.load_state(checkpoint_dir)
 
         if self._ema is not None:
@@ -536,10 +636,10 @@ class BottleneckTrainer:
         self._best_metric = state.get("best_metric")
         self._best_model_checkpoint = state.get("best_model_checkpoint")
 
-        # Repopulate checkpoint list so rotation works correctly after resume
         self._saved_checkpoints = sorted(
             [
-                str(d) for d in Path(self.cfg.output_dir).glob("checkpoint-*")
+                str(d)
+                for d in Path(self.cfg.output_dir).glob("checkpoint-*")
                 if d.is_dir() and (d / "trainer_state.json").exists()
             ],
             key=lambda d: int(Path(d).name.split("-")[1]),
@@ -551,10 +651,10 @@ class BottleneckTrainer:
         return global_step
 
     def _find_latest_checkpoint(self) -> Optional[str]:
-        """Return the path of the most recent checkpoint in output_dir, or None."""
         candidates = sorted(
             [
-                d for d in Path(self.cfg.output_dir).glob("checkpoint-*")
+                d
+                for d in Path(self.cfg.output_dir).glob("checkpoint-*")
                 if d.is_dir() and (d / "trainer_state.json").exists()
             ],
             key=lambda d: int(d.name.split("-")[1]),
@@ -568,7 +668,6 @@ class BottleneckTrainer:
             return a == b
 
     def _maybe_update_best_model_checkpoint(self, checkpoint_dir: str, global_step: int) -> None:
-        """If eval ran at this step, compare ``metric_for_best_model`` and track best ckpt."""
         cfg = self.cfg
         if not cfg.metric_for_best_model:
             return
@@ -601,10 +700,6 @@ class BottleneckTrainer:
                 )
 
     def _rotate_checkpoints(self):
-        """Remove oldest checkpoints once save_total_limit is exceeded.
-
-        Never deletes ``best_model_checkpoint`` (HF Trainer behavior).
-        """
         limit = self.cfg.save_total_limit
         if not limit or limit <= 0:
             return
@@ -621,3 +716,18 @@ class BottleneckTrainer:
             oldest = self._saved_checkpoints.pop(remove_idx)
             if self.accelerator.is_main_process and os.path.isdir(oldest):
                 shutil.rmtree(oldest)
+
+
+def load_hybrid_latent_weights(checkpoint_path: str, model: HybridLatentReasoningGPT2, device: str = "cpu") -> None:
+    if checkpoint_path.endswith(".safetensors"):
+        missing, unexpected = load_model(
+            model, checkpoint_path, strict=False, device=device
+        )
+    else:
+        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+
+    if unexpected:
+        print("Warning: unexpected keys in checkpoint:", unexpected)
+    if missing:
+        print("Warning: missing keys (not loaded):", missing)

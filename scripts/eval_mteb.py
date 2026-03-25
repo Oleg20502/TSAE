@@ -36,7 +36,8 @@ from mteb.models.model_meta import ModelMeta
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.backbones.repr_embedder import STReprEncoder
-from src.models.bottleneck_ae import BottleneckAE, load_bottleneck_model
+from src.models.bottleneck_ae import BottleneckAE, load_bottleneck_model, build_repr_encoder
+from src.utils.config import load_config
 
 
 TASK_TYPES = ["STS", "Classification"]
@@ -180,8 +181,6 @@ def main():
             config_paths=args.config,
             checkpoint_path=args.checkpoint,
             device=args.device,
-            no_repr=args.no_repr,
-            use_legacy_repr=args.use_legacy_repr,
         )
 
         wrapped_model = EncoderWrapper(
@@ -189,7 +188,7 @@ def main():
             tokenizer=tokenizer,
             device=args.device,
             max_length=cfg.model.max_length,
-            force_pool = True,
+            force_pool = False,
         )
         model_name = "BottleneckAE"
 
@@ -199,8 +198,8 @@ def main():
 
         model_name = args.st_model       
 
-        tokenizer = AutoTokenizer.from_pretrained(model_name) 
-        model = STReprEncoder(model_name=model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = build_repr_encoder(model_name, args.use_legacy_repr)
 
         wrapped_model = EncoderWrapper(
             model=model,
