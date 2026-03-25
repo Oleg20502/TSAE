@@ -124,8 +124,8 @@ class HybridLatentCollator:
         lm_labels = torch.full((B, self.T), -100, dtype=torch.long)
         for b in range(B):
             valid_a = int(ans_m[b].sum().item())
-            for t in range(max(valid_a - 1, 0)):
-                lm_labels[b, self.answer_start + t] = ans_ids[b, t + 1]
+            for t in range(valid_a):
+                lm_labels[b, self.answer_start + t] = ans_ids[b, t]
 
         return {
             "prompt_token_ids": prompt_ids,
@@ -268,8 +268,8 @@ class GeneralHybridLatentCollator:
         lm_labels = torch.full((B, self.T), -100, dtype=torch.long)
         for b in range(B):
             valid_a = int(ans_m[b].sum().item())
-            for t in range(max(valid_a - 1, 0)):
-                lm_labels[b, self.answer_start + t] = ans_ids[b, t + 1]
+            for t in range(valid_a):
+                lm_labels[b, self.answer_start + t] = ans_ids[b, t]
 
         return {
             "prompt_token_ids": prompt_ids,
