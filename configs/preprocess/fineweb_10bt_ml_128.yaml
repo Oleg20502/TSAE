@@ -13,7 +13,7 @@ data:
   num_train_samples: null
   num_val_samples: 100000
   seed: 42
-  cache_dir: /home/okashurin/okashurin/datasets/
-  preprocessed_dir: /home/okashurin/okashurin/datasets/fineweb_10bt_ml_128
+  cache_dir: datasets/
+  preprocessed_dir: datasets/fineweb_10bt_ml_128
   prepare_num_proc: 32
   preprocess_batch_size: 20000

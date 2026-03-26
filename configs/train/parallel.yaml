@@ -2,13 +2,13 @@ model:
   backbone_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
   
-  n_latent_tokens: 2
+  n_latent_tokens: 1
   d_model: 768
   max_length: 16
-  noise_std: 0.2
-  sigma_type: "abs"
+  noise_std: 0.05
+  sigma_type: "rel"
   feature_dropout_p: 0.0
-  lambda_sem: 1
+  lambda_sem: 10
   normalize_latent: False
 
   # encoder
@@ -18,34 +18,35 @@ model:
   encoder_dropout: 0.1
   
   # decoder
-  decoder_type: "autoregressive"
+  decoder_type: "parallel"
   decoder_layers: 6
   decoder_heads: 12
   decoder_ff_dim: 3072
   decoder_dropout: 0.1
 
 train:
-  output_dir: outputs/vavae_mpnet_nl_2_std_0.2_sl_1
+  output_dir: outputs/parallel/1
+  init_from_checkpoint: null
   lr: 1.0e-4
   weight_decay: 0.01
-  ema_decay: -1
+  ema_decay: 0.999
   epochs: 100
   warmup_steps: 1000
-  batch_size: 32
-  gradient_accumulation_steps: 4
+  batch_size: 512
+  gradient_accumulation_steps: 1
   max_grad_norm: 1.0
   logging_steps: 100
   eval_steps: 1000
   save_steps: 1000
   save_total_limit: 2
   fp16: false
-  bf16: false
+  bf16: true
   dataloader_num_workers: 16
   seed: 42
   report_to: tensorboard
 
 data:
-  preprocessed_dir: datasets/fineweb_10bt_chunks
+  preprocessed_dir: data/fineweb_10bt_ml_16
   num_train_samples: null
   num_val_samples: null
   seed: 42

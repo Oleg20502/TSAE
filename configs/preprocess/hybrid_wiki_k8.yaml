@@ -6,19 +6,19 @@ data:
   dataset_name: wikimedia/wikipedia
   dataset_config: "20231101.en"
   text_column: text
-  cache_dir: /home/okashurin/okashurin/datasets/
+  cache_dir: datasets/
   preprocess_mode: paragraphs
   max_samples: null
   num_train_samples: 1000000000
   num_val_samples: 10000
   seed: 42
-  preprocessed_dir: /home/okashurin/okashurin/datasets/wiki_k8_mp_2
+  preprocessed_dir: datasets/wiki_k8_mp_2
   prepare_num_proc: 16
   preprocess_batch_size: 20000
 
   gpt2_tokenizer_name: openai-community/gpt2
 
-  ae_config_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml
+  ae_config_path: outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml
   max_latent_steps: 8
   prompt_min_len: 32
   prompt_max_len: 96

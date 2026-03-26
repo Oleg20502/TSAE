@@ -1,6 +1,6 @@
 model:
-  ae_config_path: "/home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml"
-  ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-925000/model.safetensors
+  ae_config_path: "outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml"
+  ae_checkpoint_path: "outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-925000/model.safetensors"
   pretrained_gpt2: "openai-community/gpt2"
   max_model_seq_len: null
   lambda_mse: 0.1

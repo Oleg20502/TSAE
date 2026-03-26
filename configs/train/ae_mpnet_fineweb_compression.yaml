@@ -47,7 +47,7 @@ train:
   report_to: tensorboard
 
 data:
-  preprocessed_dir: /home/okashurin/okashurin/datasets/fineweb_10bt_chunks
+  preprocessed_dir: datasets/fineweb_10bt_chunks
   num_train_samples: null
   num_val_samples: null
   seed: 42

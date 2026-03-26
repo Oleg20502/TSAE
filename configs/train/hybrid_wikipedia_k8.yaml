@@ -3,8 +3,8 @@
 # 2) Keep data.preprocessed_dir aligned with preprocess YAML data.preprocessed_dir.
 
 model:
-  ae_config_path: "/home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml"
-  ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-925000/model.safetensors
+  ae_config_path: "outputs/vavae_mpnet_nl_1_std_0.2_sl_10/config.yaml"
+  ae_checkpoint_path: "outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-925000/model.safetensors
   pretrained_gpt2: "openai-community/gpt2"
   max_model_seq_len: null
   lambda_mse: 0.1
@@ -32,7 +32,7 @@ train:
   report_to: tensorboard
 
 data:
-  preprocessed_dir: /home/okashurin/okashurin/datasets/wiki_k8
+  preprocessed_dir: datasets/wiki_k8
   prompt_min_len: 32
   prompt_max_len: 96
   completion_min_len: 1

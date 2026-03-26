@@ -8,14 +8,14 @@ data:
   dataset_name: HuggingFaceFW/fineweb
   dataset_config: sample-10BT
   text_column: text
-  cache_dir: /home/okashurin/okashurin/datasets/
+  cache_dir: datasets/
 
   n_chunks: 32
   chunk_size_tokens: 16
   gpt2_tokenizer_name: gpt2
   drop_incomplete_chunks: true
 
-  preprocessed_dir: /home/okashurin/okashurin/datasets/fineweb_sequences_nc_32_ml_16
+  preprocessed_dir: datasets/fineweb_sequences_nc_32_ml_16
 
   max_docs: null
   num_val_samples: 10000
