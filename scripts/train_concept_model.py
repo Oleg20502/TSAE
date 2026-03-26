@@ -117,10 +117,13 @@ def main():
     train_ds = datasets["train"]
     eval_ds  = datasets["validation"]
 
+    n_per_seq = len(train_ds[0]) if len(train_ds) else dc.n_chunks
     print(
         f"Dataset: {len(train_ds):,} train sequences  "
         f"{len(eval_ds):,} eval sequences  "
-        f"(N={dc.n_chunks} chunks × {dc.chunk_size_tokens} GPT-2 tokens each)"
+        f"(N={n_per_seq} chunks × {dc.chunk_size_tokens} GPT-2 tokens each"
+        + (f"; use_n_chunks={dc.use_n_chunks}" if dc.use_n_chunks is not None else "")
+        + ")"
     )
 
     collator = CMCollator(tokenizer=ae_tokenizer, max_length=ae_max_length)
