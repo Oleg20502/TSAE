@@ -18,8 +18,19 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 
 # Runtime deps are provided by envs/conda-pascal.yaml. Use that env, then: pip install -e .
+
 dependencies = [
+    "torch>=2.1",
     "torch-ema>=0.3",
+    "transformers>=4.36",
+    "datasets>=2.16",
+    "peft",
+    "accelerate",
+    "deepspeed",
+    "sentence-transformers>=2.3",
+    "pyyaml>=6.0",
+    "dacite>=1.8",
+    "evaluate>=0.4",
 ]
 
 [project.optional-dependencies]
