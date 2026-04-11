@@ -3,22 +3,22 @@ model:
   ae_checkpoint_path: /home/okashurin/okashurin/TSAE/outputs/vavae_mpnet_nl_1_std_0.2_sl_10/checkpoint-925000/model.safetensors
   pretrained_gpt2: "openai-community/gpt2"
   max_model_seq_len: null
-  lambda_mse: 0.1
+  lambda_mse: 1.0
 
 train:
-  output_dir: "outputs/hybrid_latent_2/nl_1_sl_0.1"
+  output_dir: "outputs/hybrid_latent_5/nl_1_sl_1.0"
   init_from_checkpoint: null
   lr: 2.0e-5
   weight_decay: 0.001
   ema_decay: 0.9999
   epochs: 100
   warmup_steps: 100
-  batch_size: 64
+  batch_size: 128
   gradient_accumulation_steps: 1
   max_grad_norm: 1.0
-  logging_steps: 20
-  eval_steps: 200
-  save_steps: 200
+  logging_steps: 50
+  eval_steps: 500
+  save_steps: 500
   save_total_limit: 2
   metric_for_best_model: eval/loss
   fp16: false
@@ -26,7 +26,6 @@ train:
   dataloader_num_workers: 16
   seed: 42
   report_to: tensorboard
-  metric_for_best_model: null
 
 data:
   dataset_name: "booydar/gsm8k"
