@@ -88,6 +88,7 @@ class HybridLatentCollator:
         end_lbl[end_ids == ae_pad] = -100
         end_dec = torch.full_like(end_ids, ae_pad)
         end_dec[0] = ae_bos
+        end_dec[1:] = end_ids[:-1]
 
         for i, row in enumerate(batch):
             task = row["task"]
@@ -113,7 +114,7 @@ class HybridLatentCollator:
                 cot_m[i, k] = am
                 cot_valid[i, k] = True
                 lbl = ids.clone()
-                lbl[ids == ae_pad] = -100
+                lbl[ids == ae_pad] = -100   # can be wrong if padding token is the same as eos token
                 cot_lbl[i, k] = lbl
                 cot_dec_in[i, k, 0] = ae_bos
                 cot_dec_in[i, k, 1:] = ids[:-1]
@@ -128,7 +129,7 @@ class HybridLatentCollator:
         lm_labels = torch.full((B, self.T), -100, dtype=torch.long)
         for b in range(B):
             valid_a = int(ans_m[b].sum().item())
-            for t in range(valid_a):
+            for t in range(1, valid_a):
                 lm_labels[b, self.answer_start + t] = ans_ids[b, t]
 
         return {
@@ -191,8 +192,7 @@ class GeneralHybridLatentCollator(HybridLatentCollator):
         end_lbl[end_ids == ae_pad] = -100
         end_dec = torch.full_like(end_ids, ae_pad)
         end_dec[0] = ae_bos
-        if end_ids.size(0) > 1:
-            end_dec[1:] = end_ids[:-1]
+        end_dec[1:] = end_ids[:-1]
 
         for i, row in enumerate(batch):
             task = row.get("task") or ""
@@ -245,7 +245,7 @@ class GeneralHybridLatentCollator(HybridLatentCollator):
         lm_labels = torch.full((B, self.T), -100, dtype=torch.long)
         for b in range(B):
             valid_a = int(ans_m[b].sum().item())
-            for t in range(valid_a):
+            for t in range(1, valid_a):
                 lm_labels[b, self.answer_start + t] = ans_ids[b, t]
 
         return {

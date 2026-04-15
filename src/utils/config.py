@@ -243,6 +243,10 @@ class ConceptDataConfig:
     gpt2_tokenizer_name: str = "gpt2"
     drop_incomplete_chunks: bool = True
 
+    # If set, training uses only the first ``use_n_chunks`` chunks per row (must be
+    # ≤ stored length, e.g. 8 on a 32-chunk preprocessed dataset). None = full row.
+    use_n_chunks: Optional[int] = None
+
     # ---- Pre-processed sequences (written by prepare_cm_dataset.py) ----
     preprocessed_dir: Optional[str] = None
 

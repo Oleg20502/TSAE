@@ -10,7 +10,7 @@ model:
   lambda_mse: 0.1
 
 train:
-  output_dir: outputs/hybrid_latent_2/wiki_k8/nl_1_sl_0.1/
+  output_dir: outputs/hybrid_latent_4/wiki_k8/nl_1_sl_0.1/
   init_from_checkpoint: null
   lr: 2.0e-5
   weight_decay: 0.001

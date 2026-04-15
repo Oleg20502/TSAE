@@ -1,6 +1,6 @@
 """Transformer decoder with causal self-attention and cross-attention to latent tokens."""
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -42,7 +42,7 @@ class DecoderBlock(nn.Module):
         self,
         x: torch.Tensor,
         latent_tokens: torch.Tensor,
-        causal_mask: torch.Tensor,
+        causal_mask: Optional[torch.Tensor] = None,
         self_key_padding_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
@@ -61,7 +61,11 @@ class DecoderBlock(nn.Module):
         x = self.norm1(x + sa_out)
 
         # 2) Cross-attention to latent tokens
-        ca_out, _ = self.cross_attn(query=x, key=latent_tokens, value=latent_tokens)
+        ca_out, _ = self.cross_attn(
+            query=x,
+            key=latent_tokens,
+            value=latent_tokens
+        )
         x = self.norm2(x + ca_out)
 
         # 3) FFN
@@ -114,8 +118,6 @@ class AutoRegressiveDecoder(nn.Module):
 
         self._init_weights()
 
-    # ------------------------------------------------------------------
-
     def _init_weights(self):
         for name, p in self.named_parameters():
             if "weight" in name and p.dim() >= 2:
@@ -123,16 +125,12 @@ class AutoRegressiveDecoder(nn.Module):
             elif "bias" in name:
                 nn.init.zeros_(p)
 
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _make_causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
         """Causal mask (T, T): True = mask out (same type as key_padding_mask for MHA)."""
         return torch.triu(
             torch.ones(seq_len, seq_len, dtype=torch.bool, device=device), diagonal=1
         )
-
-    # ------------------------------------------------------------------
 
     def forward(
         self,
@@ -210,9 +208,6 @@ class ParallelLatentDecoder(nn.Module):
             [DecoderBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
         )
 
-        causal_mask = torch.zeros(self.max_length, self.max_length, dtype=torch.bool) # No causality
-        self.register_buffer("causal_mask", causal_mask)
-
         self.ln_f = nn.LayerNorm(d_model)
 
         # LM head
@@ -230,18 +225,15 @@ class ParallelLatentDecoder(nn.Module):
     def forward(
         self,
         latent_tokens: torch.Tensor,
-        decoder_input_ids: torch.Tensor,
-        decoder_attention_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        **kwargs: Any,
+    ) -> torch.Tensor:
         """
         Args:
             latent_tokens:          (B, L, D_lat) encoder latent sequence.
-            decoder_input_ids:      (B, T) token ids, not used here.
-            decoder_attention_mask: (B, T) 1 for real, 0 for pad, not used here.
+            **kwargs: Any additional keyword arguments for compatibility.
 
         Returns:
-            logits:     (B, T, V)
-            dec_hidden: (B, D) mean-pooled decoder hidden state.
+            logits:     (B, max_length, V)
         """
         B = latent_tokens.shape[0]
         device = latent_tokens.device
@@ -249,11 +241,11 @@ class ParallelLatentDecoder(nn.Module):
         # Output queries: purely positional
         positions = torch.arange(self.max_length, device=device).unsqueeze(0)  # (1, max_length)
         x = self.pos_emb(positions)
-        x = self.emb_dropout(x)
+        x = self.emb_dropout(x)  # (1, max_length, D)
         x = x.expand(B, self.max_length, -1)  # (B, max_length, D)
 
         for block in self.blocks:
-            x = block(x, latent_tokens, self.causal_mask)
+            x = block(x, latent_tokens)
 
         x = self.ln_f(x)
 

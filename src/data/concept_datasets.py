@@ -32,20 +32,25 @@ from src.utils.config import ConceptDataConfig
 # ---------------------------------------------------------------------------
 
 class CMSequenceDataset(Dataset):
-    """Map-style dataset where each item is a ``List[str]`` of ``n_chunks`` chunks.
+    """Map-style dataset where each item is a ``List[str]`` of text chunks.
 
     Wraps a HuggingFace ``Dataset`` that has a ``"chunks"`` column produced by
-    ``build_cm_sequences()``.
+    ``build_cm_sequences()``. Optional ``use_n_chunks`` keeps only a prefix of
+    each row (shorter training sequences without re-preprocessing).
     """
 
-    def __init__(self, hf_dataset: HFDataset):
+    def __init__(self, hf_dataset: HFDataset, use_n_chunks: Optional[int] = None):
         self.data = hf_dataset
+        self._use_n_chunks = use_n_chunks
 
     def __len__(self) -> int:
         return len(self.data)
 
     def __getitem__(self, idx: int) -> List[str]:
-        return self.data[idx]["chunks"]
+        chunks = self.data[idx]["chunks"]
+        if self._use_n_chunks is not None:
+            chunks = chunks[: self._use_n_chunks]
+        return chunks
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +179,15 @@ def load_cm_dataset(cfg: ConceptDataConfig) -> Dict[str, CMSequenceDataset]:
     base = Path(cfg.preprocessed_dir)
     train_hf = load_from_disk(str(base / "train"))
     val_hf   = load_from_disk(str(base / "validation"))
+    use_n = cfg.use_n_chunks
+    if use_n is not None and len(train_hf) > 0:
+        stored = len(train_hf[0]["chunks"])
+        if use_n > stored:
+            raise ValueError(
+                f"data.use_n_chunks={use_n} exceeds stored chunks per row ({stored}). "
+                "Lower use_n_chunks or rebuild data with prepare_cm_dataset.py."
+            )
     return {
-        "train":      CMSequenceDataset(train_hf),
-        "validation": CMSequenceDataset(val_hf),
+        "train":      CMSequenceDataset(train_hf, use_n_chunks=use_n),
+        "validation": CMSequenceDataset(val_hf, use_n_chunks=use_n),
     }

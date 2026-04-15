@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import GPT2LMHeadModel
 
-from src.models.concept_model import make_variable_block_causal_mask
+from src.models.concept_model import make_variable_block_causal_mask, block_sizes_to_ids
 
 
 class HybridLatentReasoningGPT2(nn.Module):
@@ -198,22 +198,20 @@ class HybridLatentReasoningGPT2(nn.Module):
         prompt_token_ids: torch.Tensor,
         prompt_attention_mask: torch.Tensor,
         trigger_token_ids: torch.Tensor,
-        end_latent_mse_threshold: float,
         max_latent_chunks: int = 64,
         max_answer_tokens: int = 256,
         bos_token_id: int = 50256,
         eos_token_id: int = 50256,
     ) -> Tuple[torch.Tensor, int]:
-        """Two-phase generation: latent blocks until MSE vs ``_z_end`` < threshold, then greedy tokens.
+        """Two-phase generation: latent blocks, then greedy tokens.
 
         Uses full-sequence forwards (no KV cache) for clarity.
 
         Args:
-            prompt_token_ids: ``(1, P)``
-            prompt_attention_mask: ``(1, P)``
+            prompt_token_ids: ``(1, P_max)`` (e.g. left-padded like the training collator)
+            prompt_attention_mask: ``(1, P_max)`` — 1 = real token, 0 = pad
             trigger_token_ids: ``(1, L_trig)``
-            end_latent_mse_threshold: stop latent phase when mean MSE below this
-            max_latent_chunks: safety cap on latent blocks after start
+            max_latent_chunks: number of latent blocks after start
             max_answer_tokens: cap after BOS
             bos_token_id / eos_token_id: GPT-2 specials (defaults: often ``50256`` for BOS/EOS in byte-level GPT-2)
 
@@ -227,29 +225,24 @@ class HybridLatentReasoningGPT2(nn.Module):
 
         pieces_embeds: List[torch.Tensor] = []
         pieces_block_sizes: List[int] = []
+        pieces_key_pad: List[torch.Tensor] = []
 
         emb = self.lm.transformer.wte
 
-        P = int(prompt_attention_mask.sum().item())
-        gpt_ids = prompt_token_ids[:, :P]
-        pieces_embeds.append(emb(gpt_ids))
-        pieces_block_sizes.extend([1] * P)
+        P_max = prompt_token_ids.size(1)
+        pieces_embeds.append(emb(prompt_token_ids))
+        pieces_block_sizes.extend([1] * P_max)
+        pieces_key_pad.append(prompt_attention_mask[0].to(device=device, dtype=dtype))
 
         L_trig = trigger_token_ids.size(1)
         pieces_embeds.append(emb(trigger_token_ids))
         pieces_block_sizes.extend([1] * L_trig)
+        pieces_key_pad.append(torch.ones(L_trig, device=device, dtype=dtype))
 
         z0 = self.latent_input_proj(self.latent_input_norm(self.z_start.unsqueeze(0)))
         pieces_embeds.append(z0)
         pieces_block_sizes.append(self.n_latent_tokens)
-
-        def block_ids_from_sizes(sizes: List[int], dev: torch.device) -> torch.Tensor:
-            ids: List[int] = []
-            b = 0
-            for sz in sizes:
-                ids.extend([b] * sz)
-                b += 1
-            return torch.tensor(ids, device=dev, dtype=torch.long)
+        pieces_key_pad.append(torch.ones(self.n_latent_tokens, device=device, dtype=dtype))
 
         n = self.n_latent_tokens
         n_latent_emitted = 0
@@ -257,36 +250,37 @@ class HybridLatentReasoningGPT2(nn.Module):
         for _ in range(max_latent_chunks):
             full_e = torch.cat(pieces_embeds, dim=1)
             T = full_e.size(1)
-            b_ids = block_ids_from_sizes(pieces_block_sizes, device).unsqueeze(0)
+            merge_kp = torch.cat(pieces_key_pad, dim=0).unsqueeze(0)
+            b_ids = block_sizes_to_ids(pieces_block_sizes, device).unsqueeze(0)
             mask = make_variable_block_causal_mask(
                 b_ids,
                 dtype=dtype,
-                merge_key_padding_mask=torch.ones(1, T, device=device, dtype=dtype),
+                merge_key_padding_mask=merge_kp,
             )
             out = self.forward(full_e, mask)
             z_last = out["latent_pred"][0, T - n : T]
-            mse = F.mse_loss(z_last.float(), z_end[0].float()).item()
-            if mse < end_latent_mse_threshold:
-                break
             z_next_ae = z_last.unsqueeze(0).to(dtype=dtype)
             next_chunk = self.latent_input_proj(self.latent_input_norm(z_next_ae))
             pieces_embeds.append(next_chunk)
             pieces_block_sizes.append(n)
+            pieces_key_pad.append(torch.ones(n, device=device, dtype=dtype))
             n_latent_emitted += 1
 
         bos = emb(torch.tensor([[bos_token_id]], device=device))
         pieces_embeds.append(bos)
         pieces_block_sizes.append(1)
+        pieces_key_pad.append(torch.ones(1, device=device, dtype=dtype))
 
         gen_ids: List[int] = []
         for _step in range(max_answer_tokens):
             full_e = torch.cat(pieces_embeds, dim=1)
             T = full_e.size(1)
-            b_ids = block_ids_from_sizes(pieces_block_sizes, device).unsqueeze(0)
+            merge_kp = torch.cat(pieces_key_pad, dim=0).unsqueeze(0)
+            b_ids = block_sizes_to_ids(pieces_block_sizes, device).unsqueeze(0)
             mask = make_variable_block_causal_mask(
                 b_ids,
                 dtype=dtype,
-                merge_key_padding_mask=torch.ones(1, T, device=device, dtype=dtype),
+                merge_key_padding_mask=merge_kp,
             )
             out = self.forward(full_e, mask)
             logits = out["lm_logits"][0, -1]
@@ -296,5 +290,6 @@ class HybridLatentReasoningGPT2(nn.Module):
                 break
             pieces_embeds.append(emb(torch.tensor([[nxt]], device=device)))
             pieces_block_sizes.append(1)
+            pieces_key_pad.append(torch.ones(1, device=device, dtype=dtype))
 
         return torch.tensor([gen_ids], device=device, dtype=torch.long), n_latent_emitted
