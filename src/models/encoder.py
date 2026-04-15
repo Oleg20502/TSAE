@@ -46,7 +46,6 @@ class BottleneckEncoderBlock(nn.Module):
         self,
         text_tokens: torch.Tensor,
         latent_query: torch.Tensor,
-        text_key_padding_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -63,7 +62,6 @@ class BottleneckEncoderBlock(nn.Module):
             query=text_tokens,
             key=text_tokens,
             value=text_tokens,
-            key_padding_mask=text_key_padding_mask,
         )
         text_tokens = self.norm1(text_tokens + sa_out)
 
@@ -72,7 +70,6 @@ class BottleneckEncoderBlock(nn.Module):
             query=latent_query,
             key=text_tokens,
             value=text_tokens,
-            key_padding_mask=text_key_padding_mask,
         )
         latent_query = self.norm2(latent_query + ca_out)
 
@@ -166,17 +163,12 @@ class BottleneckEncoder(nn.Module):
         text_tokens = self.tok_emb(input_ids) + self.pos_emb(positions)
         text_tokens = self.emb_dropout(text_tokens)  # (B, T, d_model)
 
-        # Key padding mask for self-attention (True = ignore)
-        text_kp_mask = None
-        if attention_mask is not None:
-            text_kp_mask = attention_mask.eq(0)  # (B, T)
-
         # Expand learned latent queries for the batch (B, n_latent_tokens, d_model)
         latent_query = self.latent_query.expand(B, -1, -1)
 
         # Run through encoder blocks
         for block in self.blocks:
-            text_tokens, latent_query = block(text_tokens, latent_query, text_kp_mask)
+            text_tokens, latent_query = block(text_tokens, latent_query)
 
         # Final layer norm
         latent = self.ln_f(latent_query)         # (B, n_latent_tokens, d_model)
