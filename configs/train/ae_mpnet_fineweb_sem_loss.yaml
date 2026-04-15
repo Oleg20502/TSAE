@@ -1,6 +1,6 @@
 model:
-  backbone_name: "sentence-transformers/all-mpnet-base-v2"
-  freeze_repr: true
+  repr_encoder_name: "sentence-transformers/all-mpnet-base-v2"
+  ae_tokenizer_name: "openai-community/gpt2"
   
   n_latent_tokens: 2
   d_model: 768

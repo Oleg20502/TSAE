@@ -119,8 +119,8 @@ class BottleneckModelConfig:
     """Configuration for the Bottleneck autoencoder model."""
 
     # Backbone (used only as semantic loss target)
-    backbone_name: str = "princeton-nlp/sup-simcse-bert-base-uncased"
-    freeze_repr: bool = True
+    repr_encoder_name: str = "princeton-nlp/sup-simcse-bert-base-uncased"
+    ae_tokenizer_name: str = "openai-community/gpt2"
 
     d_model: int = 256
     max_length: int = 128

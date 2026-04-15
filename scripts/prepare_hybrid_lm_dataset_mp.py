@@ -59,7 +59,7 @@ def main() -> None:
 
     ae_exp = merge_bottleneck_configs(dc.ae_config_path)
     ae_max_length = int(ae_exp.model.max_length)
-    ae_backbone = ae_exp.model.backbone_name
+    ae_backbone = ae_exp.model.repr_encoder_name
 
     num_proc = dc.prepare_num_proc or 1
     batch_size = dc.preprocess_batch_size or 2000
@@ -147,7 +147,7 @@ def main() -> None:
             paragraphs,
             base_seed=dc.seed,
             gpt2_tokenizer_name=dc.gpt2_tokenizer_name,
-            ae_backbone_name=ae_backbone,
+            ae_repr_encoder_name=ae_backbone,
             prompt_min=dc.prompt_min_len,
             prompt_max=dc.prompt_max_len,
             completion_min=dc.completion_min_len,

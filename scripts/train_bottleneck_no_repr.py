@@ -44,7 +44,7 @@ def main():
     Path(tc.output_dir).mkdir(parents=True, exist_ok=True)
     save_config(cfg, Path(tc.output_dir) / "config.yaml")
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.repr_encoder_name)
     vocab_size = tokenizer.vocab_size
     pad_token_id = tokenizer.pad_token_id or 0
 

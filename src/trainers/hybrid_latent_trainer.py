@@ -719,13 +719,9 @@ class HybridLatentTrainer:
 
 
 def load_hybrid_latent_weights(checkpoint_path: str, model: HybridLatentReasoningGPT2, device: str = "cpu") -> None:
-    if checkpoint_path.endswith(".safetensors"):
-        missing, unexpected = load_model(
-            model, checkpoint_path, strict=False, device=device
-        )
-    else:
-        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
-        missing, unexpected = model.load_state_dict(state, strict=False)
+    missing, unexpected = load_model(
+        model, checkpoint_path, strict=False, device=device
+    )
 
     if unexpected:
         print("Warning: unexpected keys in checkpoint:", unexpected)

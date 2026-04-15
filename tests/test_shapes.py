@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.backbones.repr_embedder import BaseTextReprEncoder
 from src.models.bottleneck_ae import BottleneckAE
-from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
+from src.models.decoder import AutoRegressiveDecoder, ParallelDecoder
 from src.models.bottleneck_encoder import BottleneckEncoder
 
 
@@ -124,7 +124,7 @@ class TestDecoderShapes:
 
 class TestParallelDecoderShapes:
     def test_output_shapes_parallel(self):
-        decoder = ParallelLatentDecoder(
+        decoder = ParallelDecoder(
             vocab_size=VOCAB,
             d_model=D_DEC,
             n_layers=2,
@@ -142,7 +142,7 @@ class TestParallelDecoderShapes:
         assert dec_hidden.shape == (B, D_DEC)
 
     def test_output_shapes_parallel_no_mask(self):
-        decoder = ParallelLatentDecoder(
+        decoder = ParallelDecoder(
             vocab_size=VOCAB,
             d_model=D_DEC,
             n_layers=2,

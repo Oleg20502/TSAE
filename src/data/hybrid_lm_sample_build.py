@@ -210,7 +210,7 @@ def build_samples_parallel(
     *,
     base_seed: int,
     gpt2_tokenizer_name: str,
-    ae_backbone_name: str,
+    ae_repr_encoder_name: str,
     prompt_min: int,
     prompt_max: int,
     completion_min: int,
@@ -232,7 +232,7 @@ def build_samples_parallel(
     with mp_ctx.Pool(
         num_workers,
         initializer=pool_init,
-        initargs=(gpt2_tokenizer_name, ae_backbone_name),
+        initargs=(gpt2_tokenizer_name, ae_repr_encoder_name),
         maxtasksperchild=512,
     ) as pool:
         offset = 0

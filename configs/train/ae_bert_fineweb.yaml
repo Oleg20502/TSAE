@@ -1,5 +1,5 @@
 model:
-  backbone_name: "sentence-transformers/nli-bert-base"
+  repr_encoder_name: "sentence-transformers/nli-bert-base"
   freeze_repr: true
   d_model: 768
   n_latent_tokens: 2

@@ -157,7 +157,7 @@ def main() -> None:
 
     ae_exp = merge_bottleneck_configs(dc.ae_config_path)
     ae_max_length = int(ae_exp.model.max_length)
-    ae_tok = AutoTokenizer.from_pretrained(ae_exp.model.backbone_name)
+    ae_tok = AutoTokenizer.from_pretrained(ae_exp.model.repr_encoder_name)
     gpt2_tok = AutoTokenizer.from_pretrained(dc.gpt2_tokenizer_name)
 
     rng = np.random.default_rng(dc.seed)
@@ -286,7 +286,7 @@ def main() -> None:
         "early_stop_after_accepted": early_stop,
         "max_latent_steps": dc.max_latent_steps,
         "ae_max_length": ae_max_length,
-        "ae_backbone": ae_exp.model.backbone_name,
+        "ae_backbone": ae_exp.model.repr_encoder_name,
         "gpt2_tokenizer_name": dc.gpt2_tokenizer_name,
         "prompt_min_len": dc.prompt_min_len,
         "prompt_max_len": dc.prompt_max_len,

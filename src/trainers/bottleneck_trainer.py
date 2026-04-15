@@ -168,7 +168,7 @@ class BottleneckTrainer:
         if self._repr_encoder is None:
             return None
         with torch.no_grad():
-            return self._repr_encoder.encode(batch["input_ids"], batch["attention_mask"])
+            return self._repr_encoder.encode(batch["embedder_input_ids"], batch["embedder_attention_mask"])
 
     def _forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         sent_emb = self._get_sent_emb(batch)

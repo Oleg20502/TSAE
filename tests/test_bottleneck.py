@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.backbones.repr_embedder import BaseTextReprEncoder
 from src.models.bottleneck_ae import BottleneckAE
-from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
+from src.models.decoder import AutoRegressiveDecoder, ParallelDecoder
 from src.models.encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
 from src.trainers.bottleneck_trainer import _TrainableCore
@@ -146,7 +146,7 @@ def _build_trainable_core(decoder_type="autoregressive"):
             d_ff=D_DEC * 2, max_length=T, pad_token_id=0,
         )
     else:
-        dec = ParallelLatentDecoder(
+        dec = ParallelDecoder(
             vocab_size=VOCAB, d_model=D_DEC, n_layers=2, n_heads=N_HEADS,
             d_ff=D_DEC * 2, max_length=T, pad_token_id=0,
         )

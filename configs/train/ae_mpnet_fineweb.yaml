@@ -1,5 +1,5 @@
 model:
-  backbone_name: "sentence-transformers/all-mpnet-base-v2"
+  repr_encoder_name: "sentence-transformers/all-mpnet-base-v2"
   freeze_repr: true
   
   n_latent_tokens: 1

@@ -176,7 +176,7 @@ class AutoRegressiveDecoder(nn.Module):
         return logits
 
 
-class ParallelLatentDecoder(nn.Module):
+class ParallelDecoder(nn.Module):
     """Non-autoregressive decoder that reconstructs all tokens from the latent in one pass.
 
     Positions are parameterised only by their

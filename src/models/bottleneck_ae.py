@@ -7,7 +7,7 @@ import torch.nn as nn
 from transformers import AutoTokenizer
 
 from src.backbones.repr_embedder import BaseTextReprEncoder, CLSReprEncoder, STReprEncoder
-from src.models.decoder import AutoRegressiveDecoder, ParallelLatentDecoder
+from src.models.decoder import AutoRegressiveDecoder, ParallelDecoder
 from src.models.encoder import BottleneckEncoder
 from src.models.latent_augmentation import LatentAugmentation
 from src.utils.config import BottleneckModelConfig, BottleneckExperimentConfig, load_config_from_paths
@@ -135,13 +135,13 @@ class BottleneckAE(nn.Module):
 # ---------------------------------------------------------------------------
 
 def build_repr_encoder(
-    backbone_name: str,
+    repr_encoder_name: str,
     use_legacy_repr: bool = False,
 ) -> BaseTextReprEncoder:
         if use_legacy_repr:
-            return CLSReprEncoder(model_name=backbone_name)
+            return CLSReprEncoder(model_name=repr_encoder_name)
         else:
-            return STReprEncoder(model_name=backbone_name)
+            return STReprEncoder(model_name=repr_encoder_name)
 
 
 def build_sem_proj(
@@ -186,7 +186,7 @@ def build_decoder(
             pad_token_id=pad_token_id,
         )
     elif cfg.decoder_type == "parallel":
-        return ParallelLatentDecoder(
+        return ParallelDecoder(
             vocab_size=vocab_size,
             d_model=cfg.d_model,
             n_layers=cfg.decoder_layers,
@@ -273,9 +273,14 @@ def load_bottleneck_model(
     training-only components that are not stored in checkpoints.
     """
     cfg = load_config_from_paths(config_paths)
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.ae_tokenizer_name)
+    if tokenizer.pad_token_id is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        elif tokenizer.bos_token is not None:
+            tokenizer.pad_token = tokenizer.bos_token
     vocab_size = tokenizer.vocab_size
-    pad_token_id = tokenizer.pad_token_id or 0
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
     encoder = build_encoder(cfg.model, vocab_size, pad_token_id)
     decoder = build_decoder(cfg.model, vocab_size, pad_token_id)

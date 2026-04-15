@@ -41,7 +41,7 @@ def main():
     cfg = merge_configs(*args.configs)
 
     # Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone_name)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.repr_encoder_name)
     vocab_size = tokenizer.vocab_size
     pad_token_id = tokenizer.pad_token_id or 0
 
