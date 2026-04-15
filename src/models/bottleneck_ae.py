@@ -40,7 +40,6 @@ class BottleneckAE(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
         decoder_input_ids: torch.Tensor,
         labels: torch.Tensor,
         decoder_attention_mask: Optional[torch.Tensor] = None,
@@ -52,7 +51,7 @@ class BottleneckAE(nn.Module):
             sent_emb: pre-computed sentence embedding from repr_encoder (detached).
                       When None the semantic loss term is skipped.
         """
-        z = self.encoder(input_ids, attention_mask)       # (B, L, D)
+        z = self.encoder(input_ids)       # (B, L, D)
         z_aug = self.latent_aug(z)                        # no-op during eval
 
         logits = self.decoder(
@@ -83,10 +82,9 @@ class BottleneckAE(nn.Module):
     def encode(
         self,
         input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Text to semantic embedding of shape (B, d_model)."""
-        z = self.encoder(input_ids, attention_mask)
+        z = self.encoder(input_ids)
         z_pooled = z.mean(dim=1)
         if self.sem_proj is not None:
             return self.sem_proj(z_pooled)
